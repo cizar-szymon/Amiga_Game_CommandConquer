@@ -87,4 +87,9 @@ Measured with the in-program profiler (`RAM:cnc-log.txt`, lines `PROF` and `SLOT
 | Baseline | 79 000 | 12 | 45 ms of it asleep in Frame_Limiter (`std::chrono::steady_clock` too coarse -> sleep requests of 8.3, 16.6, 25 ... ms; first `Delay()` based sleep, then timer.device, same result) |
 | E-Clock time source (`Amiga_Micros64`) in Frame_Limiter and `WinTimerClass::Now` | 33 000 | 28-30 | sleep 0 |
 
-Breakdown after that (us/frame): Map.Render 15 000 (Draw_It 7 000-10 000, Blit_Display HidPage->SeenBuff 7 400), present (WritePixelArray 640x400 LUT8) 14 600, Logic.AI 2 400-5 000, input 300, sort 190, color cycle 220, LoadRGB32 20. Next: present via locked bitmap + MOVE16 (plan: ~60 MB/s = 4 ms), skip unchanged frames, remove the HidPage->SeenBuff copy, Draw_It inner loops.
+Breakdown after the clock fix (us/frame): Map.Render 15 000 (Draw_It 7 000-10 000, Blit_Display HidPage->SeenBuff 7 400), present (WritePixelArray 640x400 LUT8) 14 600, Logic.AI 2 400-5 000, input 300, sort 190, color cycle 220, LoadRGB32 20. Next: present via locked bitmap + MOVE16 (plan: ~60 MB/s = 4 ms), skip unchanged frames, remove the HidPage->SeenBuff copy, Draw_It inner loops.
+
+| Present via `LockBitMapTags` + MOVE16 (after `CacheClearE`) instead of `WritePixelArray`; software cursor drawn with save-under instead of copying the frame | 25 000 | 39-41 | present 14 600 -> 5 300 |
+| No HidPage->SeenBuff copy: `Blit_Display` hands HidPage (16-byte aligned buffer) to the video layer, SeenBuff is filled only when the engine touches it (`Flush_Hid`) | 16 000-18 000 | **56-63** | blitdisplay 7 400 -> 6; mainloop 16-18 ms: Draw_It 7 100-8 400, present 5 300, Logic.AI 2 400-4 600 |
+
+Open for F4: Draw_It inner loops (tiles, shapes), present only when something changed (needs a dirty flag from the engine), Release build without profiler, heavy scenes (battles, many units), game speed settings. Numbers are one static scene on Amiga 1; WinUAE numbers mean nothing.

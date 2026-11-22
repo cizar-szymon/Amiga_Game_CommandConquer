@@ -1,0 +1,264 @@
+From df81dc8ed98a06e97e6b2beb14979609f58daeda Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Sun, 22 Nov 2026 20:15:42 +0100
+Subject: [PATCH 6/6] Amiga: present via locked bitmap + MOVE16, present
+ straight from HidPage (no Blit_Display copy)
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ common/video_amiga.cpp   | 132 +++++++++++++++++++++++++++++++--------
+ tiberiandawn/gscreen.cpp |  12 ++++
+ tiberiandawn/startup.cpp |   7 +++
+ 3 files changed, 124 insertions(+), 27 deletions(-)
+
+diff --git a/common/video_amiga.cpp b/common/video_amiga.cpp
+index 2ada03b..81b6816 100644
+--- a/common/video_amiga.cpp
++++ b/common/video_amiga.cpp
+@@ -280,9 +280,28 @@ void Set_DD_Palette(void* palette)
+ /*
+ ** Surfaces: 8-bit buffers in Fast RAM, 16-byte aligned.
+ */
++void* Amiga_Alloc_Aligned(int bytes)
++{
++    unsigned char* raw = (unsigned char*)AllocVec((ULONG)bytes + 16, MEMF_ANY | MEMF_CLEAR);
++    return raw ? (void*)(((unsigned long)raw + 15) & ~15UL) : nullptr;
++}
++
++static const unsigned char* HidSource = nullptr;
++static bool HidFront = false; /* true: HidSource is the current frame and the front surface is stale */
++static int HidW = 0, HidH = 0;
++
++void Amiga_Present_From(const void* pixels, int width, int height)
++{
++    HidSource = (const unsigned char*)pixels;
++    HidW = width;
++    HidH = height;
++    HidFront = true;
++}
++
+ class VideoSurfaceAmiga;
+ static VideoSurfaceAmiga* frontSurface = nullptr;
+ 
++
+ class VideoSurfaceAmiga : public VideoSurface
+ {
+ public:
+@@ -322,8 +341,20 @@ public:
+         }
+     }
+ 
++    /* The engine touches the front surface directly: bring it up to date first. */
++    void Flush_Hid()
++    {
++        if (HidFront && (Flags & GBC_VISIBLE)) {
++            if (Pixels && HidSource && HidW == Width && HidH == Height) {
++                std::memcpy(Pixels, HidSource, (size_t)Width * Height);
++            }
++            HidFront = false;
++        }
++    }
++
+     virtual void* GetData() const
+     {
++        const_cast<VideoSurfaceAmiga*>(this)->Flush_Hid();
+         return Pixels;
+     }
+     virtual int GetPitch() const
+@@ -343,6 +374,7 @@ public:
+     }
+     virtual bool LockWait()
+     {
++        Flush_Hid();
+         return Pixels != nullptr;
+     }
+     virtual bool Unlock()
+@@ -353,6 +385,7 @@ public:
+     virtual void Blt(const Rect& destRect, VideoSurface* src, const Rect& srcRect, bool mask)
+     {
+         PROF_SCOPE(PROF_BLT);
++        Flush_Hid();
+         VideoSurfaceAmiga* s = (VideoSurfaceAmiga*)src;
+         if (!Pixels || !s->Pixels) {
+             return;
+@@ -408,6 +441,7 @@ public:
+ 
+     virtual void FillRect(const Rect& rect, unsigned char color)
+     {
++        Flush_Hid();
+         if (!Pixels) {
+             return;
+         }
+@@ -427,38 +461,91 @@ public:
+         }
+     }
+ 
+-    const unsigned char* GetFrontPixels() const { return Pixels; }
++    const unsigned char* GetFrontPixels() const { return (HidFront && HidSource && HidW == Width && HidH == Height) ? HidSource : Pixels; }
+     int GetFrontWidth() const { return Width; }
+     int GetFrontHeight() const { return Height; }
+ 
+     // Send the frame to the screen.
++    /* Whole frame to the card: locked bitmap, MOVE16 straight into VRAM (write only, never read). */
++    void Present_To_Card(const unsigned char* Src)
++    {
++        struct BitMap* bm = AmigaWindow->RPort->BitMap;
++        ULONG base = 0, bpr = 0;
++        APTR lock = LockBitMapTags(bm, LBMI_BASEADDRESS, (ULONG)&base, LBMI_BYTESPERROW, (ULONG)&bpr, TAG_DONE);
++        if (!lock) {
++            WritePixelArray((APTR)Src, 0, 0, (UWORD)Width, AmigaWindow->RPort, 0, 0, (UWORD)Width, (UWORD)Height, RECTFMT_LUT8);
++            return;
++        }
++        static bool logged = false;
++        if (!logged) {
++            logged = true;
++            FILE* lf = std::fopen("RAM:cnc-log.txt", "a");
++            if (lf) {
++                std::fprintf(lf, "VRAM base %08lx bytesperrow %lu src %p\n", (unsigned long)base, (unsigned long)bpr, (void*)Pixels);
++                std::fclose(lf);
++            }
++        }
++        const bool aligned = ((base | bpr | (unsigned long)Src | (unsigned long)Width) & 15) == 0;
++        if (aligned) {
++            /* MOVE16 reads memory, so push dirty cache lines of the source first. */
++            CacheClearE((APTR)Src, (ULONG)Width * Height, CACRF_ClearD);
++            const unsigned char* s = Src;
++            unsigned char* d = (unsigned char*)base;
++            if (bpr == (ULONG)Width) {
++                unsigned n = ((unsigned)Width * Height) >> 4;
++                asm volatile("1: move16 (%0)+,(%1)+\n\tsubq.l #1,%2\n\tbne 1b" : "+a"(s), "+a"(d), "+d"(n) : : "memory", "cc");
++            } else {
++                for (int y = 0; y < Height; y++) {
++                    const unsigned char* rs = s + y * Width;
++                    unsigned char* rd = d + y * bpr;
++                    unsigned n = (unsigned)Width >> 4;
++                    asm volatile("1: move16 (%0)+,(%1)+\n\tsubq.l #1,%2\n\tbne 1b" : "+a"(rs), "+a"(rd), "+d"(n) : : "memory", "cc");
++                }
++            }
++        } else {
++            for (int y = 0; y < Height; y++) {
++                CopyMemQuick((APTR)(Src + y * Width), (APTR)(base + (unsigned long)y * bpr), (ULONG)Width);
++            }
++        }
++        UnLockBitMap(lock);
++    }
++
+     void RenderSurface()
+     {
+         if (!Pixels || !AmigaWindow) {
+             return;
+         }
+-        const unsigned char* src = Pixels;
+-        if (GameCursor.Data && Present && !Get_Mouse_State()) {
+-            std::memcpy(Present, Pixels, (size_t)Width * Height);
+-            int cx = MouseX - GameCursor.HotX, cy = MouseY - GameCursor.HotY;
+-            for (int y = 0; y < GameCursor.H; y++) {
+-                int py = cy + y;
+-                if (py < 0 || py >= Height)
+-                    continue;
+-                for (int x = 0; x < GameCursor.W; x++) {
+-                    int px = cx + x;
+-                    if (px < 0 || px >= Width)
+-                        continue;
+-                    unsigned char c = GameCursor.Data[y * GameCursor.W + x];
++        /* Software cursor: draw into the frame, send, then put back the pixels underneath. */
++        unsigned char* frame = (HidFront && HidSource && HidW == Width && HidH == Height) ? (unsigned char*)HidSource : Pixels;
++        static unsigned char under[64 * 64];
++        int cx = 0, cy = 0, x0 = 0, y0 = 0, x1 = 0, y1 = 0;
++        bool cursor = GameCursor.Data && GameCursor.W <= 64 && GameCursor.H <= 64 && !Get_Mouse_State();
++        if (cursor) {
++            cx = MouseX - GameCursor.HotX;
++            cy = MouseY - GameCursor.HotY;
++            x0 = cx < 0 ? 0 : cx;
++            y0 = cy < 0 ? 0 : cy;
++            x1 = cx + GameCursor.W > Width ? Width : cx + GameCursor.W;
++            y1 = cy + GameCursor.H > Height ? Height : cy + GameCursor.H;
++            for (int y = y0; y < y1; y++) {
++                for (int x = x0; x < x1; x++) {
++                    unsigned char& px = frame[y * Width + x];
++                    under[(y - y0) * 64 + (x - x0)] = px;
++                    unsigned char c = GameCursor.Data[(y - cy) * GameCursor.W + (x - cx)];
+                     if (c != 0) {
+-                        Present[py * Width + px] = c;
++                        px = c;
+                     }
+                 }
+             }
+-            src = Present;
+         }
+-        WritePixelArray((APTR)src, 0, 0, (UWORD)Width, AmigaWindow->RPort, 0, 0, (UWORD)Width, (UWORD)Height,
+-                        RECTFMT_LUT8);
++        Present_To_Card(frame);
++        if (cursor) {
++            for (int y = y0; y < y1; y++) {
++                for (int x = x0; x < x1; x++) {
++                    frame[y * Width + x] = under[(y - y0) * 64 + (x - x0)];
++                }
++            }
++        }
+     }
+ 
+ private:
+@@ -531,15 +618,6 @@ static struct timerequest* SleepReq = nullptr;
+ /* Precise sleep (UNIT_MICROHZ). Below ~100 us the request costs more than it saves: return. */
+ void Amiga_Sleep_Us(unsigned us)
+ {
+-    static unsigned calls = 0;
+-    calls++;
+-    if (calls > 200 && calls <= 260) {
+-        FILE* sf = std::fopen("RAM:cnc-log.txt", "a");
+-        if (sf) {
+-            std::fprintf(sf, "SLEEP call %u us %u\n", calls, us);
+-            std::fclose(sf);
+-        }
+-    }
+     if (us < 100) {
+         return;
+     }
+diff --git a/tiberiandawn/gscreen.cpp b/tiberiandawn/gscreen.cpp
+index ddcd516..a2ae2f9 100644
+--- a/tiberiandawn/gscreen.cpp
++++ b/tiberiandawn/gscreen.cpp
+@@ -478,8 +478,20 @@ void GScreenClass::Blit_Display(void)
+         WWMouse->Erase_Mouse(&HidPage, false);
+     } else {
+ #else //(0)
++#ifdef __amigaos__
++    /*
++    ** The whole HidPage is what gets shown, so do not copy it to SeenBuff: the video layer presents
++    ** straight from HidPage and only fills SeenBuff if something draws on it directly.
++    */
++    {
++        extern void Amiga_Present_From(const void* pixels, int width, int height);
++        WWMouse->Draw_Mouse(&HidPage);
++        Amiga_Present_From((const void*)HidPage.Get_Offset(), HidPage.Get_Width(), HidPage.Get_Height());
++    }
++#else
+     WWMouse->Draw_Mouse(&HidPage);
+     HidPage.Blit(SeenBuff, 0, 0, 0, 0, HidPage.Get_Width(), HidPage.Get_Height(), false);
++#endif
+ #ifdef CHEAT_KEYS
+     Add_Current_Screen();
+ #endif
+diff --git a/tiberiandawn/startup.cpp b/tiberiandawn/startup.cpp
+index 62e80be..b126485 100644
+--- a/tiberiandawn/startup.cpp
++++ b/tiberiandawn/startup.cpp
+@@ -385,7 +385,14 @@ int main(int argc, char** argv)
+         if (video_memory < ScreenWidth * ScreenHeight || (!(video_capabilities & VIDEO_BLITTER))
+             || (video_capabilities & VIDEO_NO_HARDWARE_ASSIST) || !VideoBackBufferAllowed) {
+             CCDebugString("in system memory.\n");
++#ifdef __amigaos__
++            {
++                extern void* Amiga_Alloc_Aligned(int bytes);
++                HiddenPage.Init(ScreenWidth, ScreenHeight, Amiga_Alloc_Aligned(ScreenWidth * ScreenHeight), ScreenWidth * ScreenHeight, (GBC_Enum)0);
++            }
++#else
+             HiddenPage.Init(ScreenWidth, ScreenHeight, NULL, 0, (GBC_Enum)0);
++#endif
+         } else {
+             // HiddenPage.Init (ScreenWidth , ScreenHeight , NULL , 0 , (GBC_Enum)0);
+             CCDebugString("in video memory.\n");
+-- 
+2.45.2.windows.1
+
