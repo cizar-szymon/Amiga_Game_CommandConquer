@@ -66,3 +66,8 @@ Bugs found and fixed:
 - Keyboard `Clear()` and stack dumps: `Prog_End(..., true)` is a deliberate NULL write (SmartCrash trap).
 
 Open: side-select assets, sidebar/interface not visible yet (probably missing assets or the `HidPage`/sidebar surface), music (SCORES), sound, real-Amiga run, performance.
+
+## First run on a real Amiga (Amiga 1, A1200 + Warp 1260 Extreme, 22.11.2026)
+
+Debug build, mission SCG01EA, static scene, 640x400x8, whole frame every time: `PROF 50 frames: render 14.3 ms/frame, wall 3.3-3.5 s per 50 frames (14-15 fps)`. Render = `WritePixelArray` of 256 KB (~18 MB/s). The remaining ~54 ms per frame is game and engine work (map into HidPage, `Interpolate_2X_Scale`, blits); F4 profiles it. Data on the Amiga: only the small MIX files (no MOVIES/SCORES) in `Work:Games/CommandConquer-test/data/td`.
+First attempt froze the machine (see above, Choose_Side null animation); after the fix it runs and stops on Ctrl-C (`stop vanillatd`).

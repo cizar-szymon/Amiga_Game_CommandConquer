@@ -1,0 +1,88 @@
+From 12450e059c6fb11eb5579ec7ef742a6fa78f0dcd Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Sun, 22 Nov 2026 19:04:10 +0100
+Subject: [PATCH 3/3] Amiga: frame profiler (ReadEClock)
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ common/video_amiga.cpp | 49 ++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 49 insertions(+)
+
+diff --git a/common/video_amiga.cpp b/common/video_amiga.cpp
+index 8e91c70..ce8b326 100644
+--- a/common/video_amiga.cpp
++++ b/common/video_amiga.cpp
+@@ -26,6 +26,8 @@
+ #include <proto/intuition.h>
+ #include <proto/graphics.h>
+ #include <proto/cybergraphics.h>
++#include <devices/timer.h>
++#include <proto/timer.h>
+ 
+ struct Library* CyberGfxBase = nullptr;
+ extern struct IntuitionBase* IntuitionBase;
+@@ -477,6 +479,39 @@ void Amiga_Watch(void* obj)
+     WatchVptr = *(void**)obj;
+ }
+ 
++static struct MsgPort* TimerPort = nullptr;
++static struct timerequest* TimerReq = nullptr;
++struct Device* TimerBase = nullptr;
++static ULONG EFreq = 0;
++static unsigned long long ProfRender = 0, ProfSince = 0, ProfLast = 0;
++
++static void Prof_Open()
++{
++    if (TimerReq) {
++        return;
++    }
++    TimerPort = CreateMsgPort();
++    if (!TimerPort) {
++        return;
++    }
++    TimerReq = (struct timerequest*)CreateIORequest(TimerPort, sizeof(struct timerequest));
++    if (TimerReq && OpenDevice((CONST_STRPTR)"timer.device", UNIT_ECLOCK, (struct IORequest*)TimerReq, 0) == 0) {
++        TimerBase = TimerReq->tr_node.io_Device;
++    } else {
++        TimerReq = nullptr;
++    }
++}
++
++static unsigned long long Prof_Now()
++{
++    struct EClockVal ev;
++    if (!TimerBase) {
++        return 0;
++    }
++    EFreq = ReadEClock(&ev);
++    return ((unsigned long long)ev.ev_hi << 32) | ev.ev_lo;
++}
++
+ static void Check_Watch()
+ {
+     FrameNo++;
+@@ -523,7 +558,21 @@ void Video_Render_Frame()
+ {
+     Check_Watch();
+     if (frontSurface) {
++        Prof_Open();
++        unsigned long long t0 = Prof_Now();
+         frontSurface->RenderSurface();
++        unsigned long long t1 = Prof_Now();
++        ProfRender += (t1 - t0);
++        if ((FrameNo % 50) == 0 && EFreq) {
++            FILE* pf = std::fopen("RAM:cnc-log.txt", "a");
++            if (pf) {
++                unsigned long long dt = ProfLast ? (t1 - ProfLast) : 0;
++                std::fprintf(pf, "PROF 50 frames: render %lu us/frame, wall %lu ms (%lu fps)\n", (unsigned long)((ProfRender * 1000000ULL / EFreq) / 50), (unsigned long)(dt * 1000ULL / EFreq), dt ? (unsigned long)(50ULL * EFreq / dt) : 0UL);
++                std::fclose(pf);
++            }
++            ProfRender = 0;
++            ProfLast = t1;
++        }
+         if (DumpRequested) {
+             DumpRequested = false;
+             Dump_Frame(frontSurface->GetFrontPixels(), frontSurface->GetFrontWidth(), frontSurface->GetFrontHeight());
+-- 
+2.45.2.windows.1
+
