@@ -71,3 +71,9 @@ Open: side-select assets, sidebar/interface not visible yet (probably missing as
 
 Debug build, mission SCG01EA, static scene, 640x400x8, whole frame every time: `PROF 50 frames: render 14.3 ms/frame, wall 3.3-3.5 s per 50 frames (14-15 fps)`. Render = `WritePixelArray` of 256 KB (~18 MB/s). The remaining ~54 ms per frame is game and engine work (map into HidPage, `Interpolate_2X_Scale`, blits); F4 profiles it. Data on the Amiga: only the small MIX files (no MOVIES/SCORES) in `Work:Games/CommandConquer-test/data/td`.
 First attempt froze the machine (see above, Choose_Side null animation); after the fix it runs and stops on Ctrl-C (`stop vanillatd`).
+
+## Interface and data set (22.11.2026)
+
+- The ISOs `GDI95`/`NOD95` (archive.org `gdi-95`) are the German Windows 95 edition without the patch archives. The hi-res sidebar shapes (`HSIDE1.SHP`, `HSTRIP.SHP`, ... in `UPDATEC.MIX`), the side-select assets (`TRANSIT.MIX`), `12GREEN.FNT`/`SIDES.PAL` (`UPDATE.MIX`) and the English `CCLOCAL.MIX`/`LOCAL.MIX` come from the repack `command-aand-conquer-gold` (archive.org, Gold 1.04a; single files fetched from inside the zip). Dev set: `data/td2/` (flat; `Change_Local_Dir` now accepts the data dir itself as the `.` disc, AmigaDOS has no `.` entry). Not the officially supported source (README of Vanilla Conquer) - decide what players are told to use before a release.
+- In 640x400 the sidebar is hidden until the **Sidebar** tab (top right) is clicked; `docs/mission1-sidebar.png` shows it working (tabs, radar logo, Repair/Sell/Map, two build columns, power bar).
+- Test switches in the program drawer: `nomovies` (skips intro, side select and briefings; gameplay tests start in the mission), `autoinput.on` + `autoinput.txt` (scripts in `tools/autoinput/`: wait, move, click, rclick, drag, key, dump, quit).

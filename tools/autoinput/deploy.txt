@@ -1,0 +1,12 @@
+# TD GDI mission 1: select the white vehicle and deploy it, look for the sidebar
+wait 40
+key esc
+wait 200
+click 508 198
+wait 15
+dump
+click 508 198
+wait 120
+dump
+wait 20
+quit

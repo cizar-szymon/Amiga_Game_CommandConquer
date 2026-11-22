@@ -1,0 +1,13 @@
+# TD: skip the intro movie, choose GDI, skip the briefing, screenshots of the mission
+wait 40
+key esc
+wait 120
+click 150 200
+wait 60
+dump
+key esc
+wait 60
+key esc
+wait 300
+dump
+wait 800

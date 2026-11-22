@@ -1,0 +1,11 @@
+# TD GDI mission 1: skip intro, wait for the map, select the infantry, screenshots
+wait 40
+key esc
+wait 200
+dump
+wait 10
+drag 480 225 530 260
+wait 10
+dump
+wait 20
+quit

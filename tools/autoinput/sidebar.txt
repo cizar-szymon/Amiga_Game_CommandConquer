@@ -1,0 +1,6 @@
+# TD GDI mission 1 with nomovies: open the sidebar tab, screenshot
+wait 60
+click 560 7
+wait 40
+dump
+wait 600
