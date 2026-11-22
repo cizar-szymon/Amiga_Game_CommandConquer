@@ -1,0 +1,285 @@
+From b0b2d06163b0c40bbe5fada5dc30825d7c1d237b Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Sun, 22 Nov 2026 20:43:58 +0100
+Subject: [PATCH 7/7] Amiga: FPGA E-Clock probes, per-layer and per-type
+ profiler slots, scenario test switch
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ common/amiga_prof.h      |  8 +++-
+ common/video_amiga.cpp   | 80 ++++++++++++++++++++++++++++++++++++++--
+ tiberiandawn/display.cpp | 17 +++++++--
+ tiberiandawn/init.cpp    | 11 ++++++
+ tiberiandawn/logic.cpp   |  6 ++-
+ 5 files changed, 113 insertions(+), 9 deletions(-)
+
+diff --git a/common/amiga_prof.h b/common/amiga_prof.h
+index 8f118b0..712c301 100644
+--- a/common/amiga_prof.h
++++ b/common/amiga_prof.h
+@@ -5,7 +5,7 @@
+ 
+ #ifdef __amigaos__
+ extern unsigned long long Amiga_Prof_Now();
+-extern unsigned long long Amiga_Prof_Acc[16];
++extern unsigned long long Amiga_Prof_Acc[64];
+ 
+ struct AmigaProfScope
+ {
+@@ -22,8 +22,10 @@ struct AmigaProfScope
+     }
+ };
+ #define PROF_SCOPE(id) AmigaProfScope amiga_prof_scope_##id(id)
++#define PROF_SCOPE_N(var, id) AmigaProfScope var(id)
+ #else
+ #define PROF_SCOPE(id) ((void)0)
++#define PROF_SCOPE_N(var, id) ((void)0)
+ #endif
+ 
+ /* slot ids */
+@@ -44,5 +46,9 @@ struct AmigaProfScope
+ #define PROF_BLITDISP 14
+ #define PROF_SORT 15
+ #define PROF_SLEEP 6
++#define PROF_ICONS 16
++#define PROF_SHADOW 17
++#define PROF_LAYER 18 /* + layer, 18..21 */
++#define PROF_AI_BASE 24 /* + RTTI type, 24..49 */
+ 
+ #endif
+diff --git a/common/video_amiga.cpp b/common/video_amiga.cpp
+index 81b6816..63b3799 100644
+--- a/common/video_amiga.cpp
++++ b/common/video_amiga.cpp
+@@ -27,6 +27,8 @@
+ #include <proto/intuition.h>
+ #include <proto/graphics.h>
+ #include <proto/dos.h>
++#include <libraries/configvars.h>
++#include <proto/expansion.h>
+ #include <proto/cybergraphics.h>
+ #include <devices/timer.h>
+ #include <proto/timer.h>
+@@ -564,6 +566,19 @@ static unsigned FrameNo = 0;
+ unsigned KbdPolls = 0;
+ extern volatile unsigned Amiga_Heartbeat;
+ 
++int Amiga_Test_Scenario()
++{
++    int n = 0;
++    FILE* f = std::fopen("PROGDIR:scenario", "r");
++    if (f) {
++        if (std::fscanf(f, "%d", &n) != 1) {
++            n = 0;
++        }
++        std::fclose(f);
++    }
++    return n;
++}
++
+ bool Amiga_No_Movies()
+ {
+     static int cached = -1;
+@@ -606,12 +621,13 @@ static void Prof_Open()
+     TimerReq = (struct timerequest*)CreateIORequest(TimerPort, sizeof(struct timerequest));
+     if (TimerReq && OpenDevice((CONST_STRPTR)"timer.device", UNIT_ECLOCK, (struct IORequest*)TimerReq, 0) == 0) {
+         TimerBase = TimerReq->tr_node.io_Device;
++        { struct EClockVal ev0; EFreq = ReadEClock(&ev0); }
+     } else {
+         TimerReq = nullptr;
+     }
+ }
+ 
+-unsigned long long Amiga_Prof_Acc[16];
++unsigned long long Amiga_Prof_Acc[64];
+ static struct MsgPort* SleepPort = nullptr;
+ static struct timerequest* SleepReq = nullptr;
+ 
+@@ -640,12 +656,54 @@ void Amiga_Sleep_Us(unsigned us)
+     SleepReq->tr_time.tv_micro = us % 1000000u;
+     DoIO((struct IORequest*)SleepReq);
+ }
++/* Probe clock. Warp firmware 3075+ exposes the E-Clock counter in the FPGA (90 ns per read, low 32 bits);
++** otherwise ReadEClock() (0.5 us patched, 13 us unpatched). Only the probes use it, the game keeps ReadEClock. */
++static volatile ULONG* FpgaEclk = nullptr;
++static bool FpgaChecked = false;
++
++static void Fpga_Check()
++{
++    FpgaChecked = true;
++    struct Library* eb = OpenLibrary((CONST_STRPTR)"expansion.library", 0);
++    if (!eb) {
++        return;
++    }
++    struct ConfigDev* cd = FindConfigDev(NULL, 0x1400, 101);
++    if (cd) {
++        volatile ULONG* syscfg = (volatile ULONG*)((UBYTE*)cd->cd_BoardAddr + 0x5000);
++        if (syscfg[0] >= 0x0123456AUL) {
++            FpgaEclk = syscfg + 0x24 / 4;
++        }
++    }
++    CloseLibrary(eb);
++}
++
+ unsigned long long Amiga_Prof_Now()
+ {
+-    struct EClockVal ev;
+     if (!TimerBase) {
+         return 0;
+     }
++    if (!FpgaChecked) {
++        Fpga_Check();
++    }
++    if (FpgaEclk) {
++        static ULONG lastLo = 0, hi = 0;
++        ULONG lo = *FpgaEclk;
++        if (lo < lastLo) {
++            hi++;
++        }
++        lastLo = lo;
++        return ((unsigned long long)hi << 32) | lo;
++    }
++    struct EClockVal ev;
++    EFreq = ReadEClock(&ev);
++    return ((unsigned long long)ev.ev_hi << 32) | ev.ev_lo;
++}
++
++/* ReadEClock based time for the game itself (needs EFreq). */
++static unsigned long long Eclock_Now()
++{
++    struct EClockVal ev;
+     EFreq = ReadEClock(&ev);
+     return ((unsigned long long)ev.ev_hi << 32) | ev.ev_lo;
+ }
+@@ -655,7 +713,7 @@ unsigned long long Amiga_Micros64()
+ {
+     static unsigned long long t0 = 0;
+     Prof_Open();
+-    unsigned long long t = Amiga_Prof_Now();
++    unsigned long long t = Eclock_Now();
+     if (t0 == 0) {
+         t0 = t;
+     }
+@@ -742,7 +800,21 @@ void Video_Render_Frame()
+                                  (unsigned long)(Amiga_Prof_Acc[10] * 1000000ULL / EFreq / 50), (unsigned long)(Amiga_Prof_Acc[6] * 1000000ULL / EFreq / 50));
+                     std::fclose(sf);
+                 }
+-                for (int k = 0; k < 16; k++) {
++                {
++                    FILE* s2 = std::fopen("RAM:cnc-log.txt", "a");
++                    if (s2) {
++                        std::fprintf(s2, "SLOTS2 us/frame:");
++                        for (int k = 16; k < 64; k++) {
++                            unsigned long us = (unsigned long)(Amiga_Prof_Acc[k] * 1000000ULL / EFreq / 50);
++                            if (us) {
++                                std::fprintf(s2, " %d=%lu", k, us);
++                            }
++                        }
++                        std::fprintf(s2, "\n");
++                        std::fclose(s2);
++                    }
++                }
++                for (int k = 0; k < 64; k++) {
+                     Amiga_Prof_Acc[k] = 0;
+                 }
+             }
+diff --git a/tiberiandawn/display.cpp b/tiberiandawn/display.cpp
+index 20ff4f6..fe5a370 100644
+--- a/tiberiandawn/display.cpp
++++ b/tiberiandawn/display.cpp
+@@ -75,6 +75,7 @@
+  *   DisplayClass::Center_Map -- Centers the map about the currently selected objects          *
+  *   DisplayClass::Prev_Object -- Searches for the previous object on the map.                 *
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
++#include "amiga_prof.h"
+ #include "function.h"
+ #include "common/fading.h"
+ #include "ccini.h"
+@@ -2357,7 +2358,10 @@ void DisplayClass::Draw_It(bool forced)
+         **	flagged to be redrawn.
+         */
+         // Redraw_Icons(CELL_BLIT_ONLY);
+-        Redraw_Icons(0);
++        {
++            PROF_SCOPE(PROF_ICONS);
++            Redraw_Icons(0);
++        }
+ 
+         /*
+         **	Once the icons are drawn, duplicate the bottom line of the screen into the phantom
+@@ -2377,6 +2381,7 @@ void DisplayClass::Draw_It(bool forced)
+             **	first and then followed by all the layers in increasing altituded.
+             */
+             for (LayerType layer = LAYER_GROUND; layer < LAYER_COUNT; layer++) {
++                PROF_SCOPE_N(layer_scope, PROF_LAYER + (int)layer);
+                 for (int index = 0; index < Layer[layer].Count(); index++) {
+                     Layer[layer][index]->Render(forced);
+                 }
+@@ -2386,10 +2391,16 @@ void DisplayClass::Draw_It(bool forced)
+             **	Finally, redraw the shadow overlay as necessary.
+             */
+             // Colour_Debug(5);
+-            Redraw_Shadow();
++            {
++                PROF_SCOPE_N(shadow1, PROF_SHADOW);
++                Redraw_Shadow();
++            }
+         }
+ 
+-        Redraw_Shadow_Rects();
++        {
++            PROF_SCOPE_N(shadow2, PROF_SHADOW);
++            Redraw_Shadow_Rects();
++        }
+ 
+         HidPage.Unlock();
+ 
+diff --git a/tiberiandawn/init.cpp b/tiberiandawn/init.cpp
+index 8ae9955..94c7efd 100644
+--- a/tiberiandawn/init.cpp
++++ b/tiberiandawn/init.cpp
+@@ -1016,6 +1016,17 @@ bool Select_Game(bool fade)
+ 
+                     Scen.Scenario = 1;
+                     BuildLevel = 1;
++#ifdef __amigaos__
++                    {
++                        /* test switch: file PROGDIR:scenario holds the GDI mission number to start */
++                        extern int Amiga_Test_Scenario();
++                        int n = Amiga_Test_Scenario();
++                        if (n >= 1 && n <= 15) {
++                            Scen.Scenario = n;
++                            BuildLevel = n;
++                        }
++                    }
++#endif
+ 
+                     ScenPlayer = SCEN_PLAYER_GDI;
+                     ScenDir = SCEN_DIR_EAST;
+diff --git a/tiberiandawn/logic.cpp b/tiberiandawn/logic.cpp
+index 3b894e4..f6590cc 100644
+--- a/tiberiandawn/logic.cpp
++++ b/tiberiandawn/logic.cpp
+@@ -34,6 +34,7 @@
+  *   LogicClass::Debug_Dump -- Displays logic class status to the mono screen.                 *
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
++#include "amiga_prof.h"
+ #include "function.h"
+ #include "logic.h"
+ 
+@@ -205,7 +206,10 @@ void LogicClass::AI(void)
+         ObjectClass* obj = (*this)[index];
+         int count = Count();
+ 
+-        obj->AI();
++        {
++            PROF_SCOPE_N(ai_scope, PROF_AI_BASE + (int)obj->What_Am_I());
++            obj->AI();
++        }
+ 
+         /*
+         **	If the object was destroyed in the process of performing its AI, then
+-- 
+2.45.2.windows.1
+

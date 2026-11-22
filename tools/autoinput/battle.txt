@@ -1,0 +1,15 @@
+# TD battle scenario (RAM:cnc/SCG01EA.INI from tools/make_battle_scenario.py): menu -> mission -> sidebar -> let them fight
+wait 60
+click 320 58
+wait 40
+click 500 242
+wait 150
+click 560 7
+wait 100
+dump
+wait 250
+dump
+wait 500
+dump
+wait 700
+quit
