@@ -150,3 +150,11 @@ Experiments: (1) **forced full redraw when more than 300 `Redraw_Objects` calls 
 Clean build (no probes) in the battle: 48 ms per frame (21 fps) at the start of the fight with ~95 units, 120 fps at the end. That is enough for the original game speed (15 ticks/s = 66 ms) even in this scene, not yet for `GameSpeed=2` (33 ms).
 
 Candidates left: path finding (re-planned too often by Hunt units; a result cache or a lower re-plan rate changes behaviour, so it needs a decision), the cost of `Mark` (virtual calls and cell array indexing, ~24 us per call), shape drawing by wide stores (~4 ms), `Redraw_Icons` (6 ms, 300 cells x 20 us).
+
+## Terrain icons (Amiga 1, 22.11.2026)
+
+`Redraw_Icons` 6 700-7 400 us per frame in the battle, of which `CellClass::Draw_It` 5 100-5 400, `GraphicViewPortClass::Draw_Stamp` 5 100, lock/unlock 300, `Buffer_Draw_Stamp_Clip` 4 400-4 700. Only **112-117 icons per frame** (not 300), all on the plain `memcpy` row path (transparent path 0, smudges and overlays < 100 us). That is **~38 us per 24x24 icon**, against 4.3 us for the same copy in `tools/shapebench.c`.
+
+Explanation: the benchmark writes into a block that stays in the 96 KB L2; in the game the destination (HidPage, 256 KB) and the icon data are cold, every icon row lands in another 128-byte L2 line and every miss costs 0.6-0.8 us (DDR3). The same holds for the sprite blitters (about 85 us per call for 1.3 KB of source and 36 destination rows). The copy and loop code is not the limit, the memory latency is; micro-optimising loops cannot help.
+
+Levers that remain: touch fewer lines (fewer or smaller redraws), keep the working set inside L2 (smaller or banded HidPage), overlap misses (none on the 060: no prefetch, blocking cache), or skip the HidPage altogether for static terrain. None is a local change.

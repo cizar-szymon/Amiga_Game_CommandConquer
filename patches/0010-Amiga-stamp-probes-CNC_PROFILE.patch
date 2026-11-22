@@ -1,0 +1,186 @@
+From 3e6f90c513f2fbfe7ce041e6ea637dfb0455f115 Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Sun, 22 Nov 2026 21:55:13 +0100
+Subject: [PATCH 10/10] Amiga: stamp probes (CNC_PROFILE)
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ common/amiga_prof.h         |  2 +-
+ common/graphicsviewport.cpp | 15 +++++++++++++--
+ common/stamp.cpp            |  5 +++++
+ common/video_amiga.cpp      | 10 +++++-----
+ tiberiandawn/cell.cpp       | 12 ++++++++++--
+ 5 files changed, 34 insertions(+), 10 deletions(-)
+
+diff --git a/common/amiga_prof.h b/common/amiga_prof.h
+index 7e50670..50357c4 100644
+--- a/common/amiga_prof.h
++++ b/common/amiga_prof.h
+@@ -5,7 +5,7 @@
+ 
+ #if defined(__amigaos__) && defined(CNC_PROFILE)
+ extern unsigned long long Amiga_Prof_Now();
+-extern unsigned long long Amiga_Prof_Acc[96];
++extern unsigned long long Amiga_Prof_Acc[128];
+ extern unsigned long Amiga_Prof_Calls[16];
+ extern unsigned long Amiga_Prof_Pixels[16];
+ extern unsigned long Amiga_Prof_Cnt[32];
+diff --git a/common/graphicsviewport.cpp b/common/graphicsviewport.cpp
+index 1dda825..b9e2ba6 100644
+--- a/common/graphicsviewport.cpp
++++ b/common/graphicsviewport.cpp
+@@ -43,6 +43,7 @@
+  *   GBC::GraphicBufferClass -- Default constructor (requires explicit init)*
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
++#include "amiga_prof.h"
+ #include "graphicsviewport.h"
+ 
+ #include "buffer.h"
+@@ -847,7 +848,14 @@ void GraphicViewPortClass::Draw_Stamp(void const* icondata,
+                                       void const* remap,
+                                       int clip_window)
+ {
+-    if (Lock()) {
++    bool stamp_locked;
++    {
++        PROF_SCOPE_N(prof_lock, 104);
++        stamp_locked = Lock();
++    }
++    PROF_COUNT(7);
++    if (stamp_locked) {
++        PROF_SCOPE_N(prof_clip, 105);
+         Buffer_Draw_Stamp_Clip(this,
+                                icondata,
+                                icon,
+@@ -859,7 +867,10 @@ void GraphicViewPortClass::Draw_Stamp(void const* icondata,
+                                WindowList[clip_window][WINDOWWIDTH],
+                                WindowList[clip_window][WINDOWHEIGHT]);
+     }
+-    Unlock();
++    {
++        PROF_SCOPE_N(prof_unlock, 106);
++        Unlock();
++    }
+ }
+ 
+ /***************************************************************************
+diff --git a/common/stamp.cpp b/common/stamp.cpp
+index 1b5f050..1849a6f 100644
+--- a/common/stamp.cpp
++++ b/common/stamp.cpp
+@@ -9,6 +9,7 @@
+ // distributed with this program. You should have received a copy of the
+ // GNU General Public License along with permitted additional restrictions
+ // with this program. If not, see https://github.com/electronicarts/CnC_Remastered_Collection
++#include "amiga_prof.h"
+ #include "endianness.h"
+ #include "graphicsviewport.h"
+ #include <string.h>
+@@ -241,6 +242,8 @@ void Buffer_Draw_Stamp_Clip(void const* thisptr,
+                 }
+ 
+             } else if (TransFlagPtr[icon_index]) {
++                PROF_COUNT(8);
++                PROF_SCOPE_N(prof_trans, 107);
+                 for (int i = 0; i < blit_height; ++i) {
+                     for (int j = 0; j < blit_width; ++j) {
+                         uint8_t cur_byte = *src++;
+@@ -255,6 +258,8 @@ void Buffer_Draw_Stamp_Clip(void const* thisptr,
+                 }
+ 
+             } else {
++                PROF_COUNT(9);
++                PROF_SCOPE_N(prof_copy, 108);
+                 for (int i = 0; i < blit_height; ++i) {
+                     memcpy(dst, src, blit_width);
+                     dst += full_pitch;
+diff --git a/common/video_amiga.cpp b/common/video_amiga.cpp
+index 6e01a19..ff9f61d 100644
+--- a/common/video_amiga.cpp
++++ b/common/video_amiga.cpp
+@@ -627,7 +627,7 @@ static void Prof_Open()
+     }
+ }
+ 
+-unsigned long long Amiga_Prof_Acc[96];
++unsigned long long Amiga_Prof_Acc[128];
+ unsigned long Amiga_Prof_Calls[16];
+ unsigned long Amiga_Prof_Pixels[16];
+ unsigned long Amiga_Prof_Cnt[32];
+@@ -807,7 +807,7 @@ void Video_Render_Frame()
+                     FILE* s2 = std::fopen("RAM:cnc-log.txt", "a");
+                     if (s2) {
+                         std::fprintf(s2, "SLOTS2 us/frame:");
+-                        for (int k = 16; k < 96; k++) {
++                        for (int k = 16; k < 128; k++) {
+                             unsigned long us = (unsigned long)(Amiga_Prof_Acc[k] * 1000000ULL / EFreq / 50);
+                             if (us) {
+                                 std::fprintf(s2, " %d=%lu", k, us);
+@@ -835,16 +835,16 @@ void Video_Render_Frame()
+                 {
+                     FILE* s4 = std::fopen("RAM:cnc-log.txt", "a");
+                     if (s4) {
+-                        std::fprintf(s4, "COUNTS per frame: mark_foot %lu mark_object %lu occupy_down %lu occupy_up %lu overlap_down %lu overlap_up %lu redraw_objects %lu\n",
++                        std::fprintf(s4, "COUNTS per frame: mark_foot %lu mark_object %lu occupy_down %lu occupy_up %lu overlap_down %lu overlap_up %lu redraw_objects %lu stamps %lu trans %lu copy %lu\n",
+                                      Amiga_Prof_Cnt[0] / 50, Amiga_Prof_Cnt[1] / 50, Amiga_Prof_Cnt[2] / 50, Amiga_Prof_Cnt[3] / 50, Amiga_Prof_Cnt[4] / 50,
+-                                     Amiga_Prof_Cnt[5] / 50, Amiga_Prof_Cnt[6] / 50);
++                                     Amiga_Prof_Cnt[5] / 50, Amiga_Prof_Cnt[6] / 50, Amiga_Prof_Cnt[7] / 50, Amiga_Prof_Cnt[8] / 50, Amiga_Prof_Cnt[9] / 50);
+                         std::fclose(s4);
+                     }
+                     for (int k = 0; k < 32; k++) {
+                         Amiga_Prof_Cnt[k] = 0;
+                     }
+                 }
+-                for (int k = 0; k < 96; k++) {
++                for (int k = 0; k < 128; k++) {
+                     Amiga_Prof_Acc[k] = 0;
+                 }
+             }
+diff --git a/tiberiandawn/cell.cpp b/tiberiandawn/cell.cpp
+index 2ee733b..ceab362 100644
+--- a/tiberiandawn/cell.cpp
++++ b/tiberiandawn/cell.cpp
+@@ -906,6 +906,7 @@ bool CellClass::Get_Template_Info(char* template_name, int& icon, void*& image_d
+  *=============================================================================================*/
+ void CellClass::Draw_It(int x, int y, int draw_type) const
+ {
++    PROF_SCOPE_N(prof_cell, 103);
+     Validate();
+     TemplateTypeClass const* ttype = 0;
+     int icon; // The icon number to use from the template set.
+@@ -979,7 +980,10 @@ void CellClass::Draw_It(int x, int y, int draw_type) const
+             **	This is the underlying terrain icon.
+             */
+             if (ttype->Get_Image_Data()) {
+-                LogicPage->Draw_Stamp(ttype->Get_Image_Data(), icon, x, y, NULL, WINDOW_TACTICAL);
++                {
++                    PROF_SCOPE_N(prof_stamp, 100);
++                    LogicPage->Draw_Stamp(ttype->Get_Image_Data(), icon, x, y, NULL, WINDOW_TACTICAL);
++                }
+                 if (remap) {
+                     LogicPage->Remap(x + Map.TacPixelX, y + Map.TacPixelY, ICON_PIXEL_W, ICON_PIXEL_H, remap);
+                 }
+@@ -1037,7 +1041,10 @@ void CellClass::Draw_It(int x, int y, int draw_type) const
+                 break;
+             }
+ #endif
+-            SmudgeTypeClass::As_Reference(Smudge).Draw_It(x, y, SmudgeData);
++            {
++                PROF_SCOPE_N(prof_smudge, 101);
++                SmudgeTypeClass::As_Reference(Smudge).Draw_It(x, y, SmudgeData);
++            }
+         }
+ 
+         if (!draw_type || draw_type == CELL_DRAW_ONLY) {
+@@ -1047,6 +1054,7 @@ void CellClass::Draw_It(int x, int y, int draw_type) const
+             */
+             if (Overlay != OVERLAY_NONE) {
+                 OverlayTypeClass const& otype = OverlayTypeClass::As_Reference(Overlay);
++                PROF_SCOPE_N(prof_overlay, 102);
+                 IsTheaterShape = (bool)otype.IsTheater;
+                 CC_Draw_Shape(otype.Get_Image_Data(),
+                               OverlayData,
+-- 
+2.45.2.windows.1
+
