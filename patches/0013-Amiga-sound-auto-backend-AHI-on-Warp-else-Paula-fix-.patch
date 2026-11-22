@@ -1,0 +1,110 @@
+From d31bf74c09c0f07d717753f62ba70765ae0e5f51 Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Sun, 22 Nov 2026 23:58:14 +0100
+Subject: [PATCH 13/13] Amiga: sound auto backend (AHI on Warp, else Paula),
+ fix log buffer overflow at exit
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ common/soundio_amiga.cpp | 37 +++++++++++++++++++++++++++++--------
+ 1 file changed, 29 insertions(+), 8 deletions(-)
+
+diff --git a/common/soundio_amiga.cpp b/common/soundio_amiga.cpp
+index 833afb2..c12fccc 100644
+--- a/common/soundio_amiga.cpp
++++ b/common/soundio_amiga.cpp
+@@ -26,6 +26,8 @@
+ #include <proto/exec.h>
+ #include <proto/dos.h>
+ #include <proto/ahi.h>
++#include <libraries/configvars.h>
++#include <proto/expansion.h>
+ #include <proto/timer.h>
+ 
+ struct Library* AHIBase = nullptr;
+@@ -485,8 +487,8 @@ static void Ahi_Service()
+         if (AhiSwaps - AhiHandled > 1) {
+             ++StatUnderruns; // a buffer played before it was refilled
+             if (StatUnderruns <= 12 || (StatUnderruns % 20) == 0) {
+-                char m[96];
+-                std::sprintf(m, "ahi miss #%u at %ld s: %u swaps behind", StatUnderruns, (long)(std::time(nullptr) - StatStart), (unsigned)(AhiSwaps - AhiHandled));
++                char m[256];
++                std::snprintf(m, sizeof(m), "ahi miss #%u at %ld s: %u swaps behind", StatUnderruns, (long)(std::time(nullptr) - StatStart), (unsigned)(AhiSwaps - AhiHandled));
+                 Log(m);
+             }
+         }
+@@ -512,13 +514,24 @@ static const char* Read_Mode_File()
+     return word;
+ }
+ 
++static bool Warp_Card_Present()
++{
++    struct Library* eb = OpenLibrary((CONST_STRPTR)"expansion.library", 0);
++    if (!eb) {
++        return false;
++    }
++    bool found = FindConfigDev(nullptr, 0x1400, 101) != nullptr; // Warp card: its HDMI audio is reached through AHI (warp.audio)
++    CloseLibrary(eb);
++    return found;
++}
++
+ static void Mixer_Main()
+ {
+     MixTask = FindTask(nullptr);
+     struct timerequest* treq = nullptr;
+     struct MsgPort* tport = nullptr;
+     FILE* dump = nullptr;
+-    Mode want = MODE_PAULA;
++    Mode want = Warp_Card_Present() ? MODE_AHI : MODE_PAULA; // default: AHI on a Warp card, Paula otherwise
+     const char* w = Read_Mode_File();
+     {
+         FILE* nf = std::fopen("PROGDIR:sound", "r");
+@@ -531,7 +544,9 @@ static void Mixer_Main()
+             std::fclose(nf);
+         }
+     }
+-    if (!std::strcmp(w, "ahi"))
++    if (!std::strcmp(w, "paula"))
++        want = MODE_PAULA;
++    else if (!std::strcmp(w, "ahi"))
+         want = MODE_AHI;
+     else if (!std::strcmp(w, "dump"))
+         want = MODE_DUMP;
+@@ -555,6 +570,12 @@ static void Mixer_Main()
+             Backend = MODE_AHI;
+         } else {
+             Ahi_Close();
++            Blk = 768;
++            if (Paula_Open()) { // no AHI: Paula
++                Backend = MODE_PAULA;
++            } else {
++                Paula_Close();
++            }
+         }
+     }
+     if (want == MODE_DUMP) {
+@@ -566,8 +587,8 @@ static void Mixer_Main()
+         }
+     }
+     {
+-        char msg[64];
+-        std::sprintf(msg, "sound backend %d (1 Paula, 2 AHI, 3 dump, 0 none), requested '%s'", (int)Backend, w);
++        char msg[256];
++        std::snprintf(msg, sizeof(msg), "sound backend %d (1 Paula, 2 AHI, 3 dump, 0 none), requested '%s'", (int)Backend, w);
+         Log(msg);
+     }
+     StatStart = std::time(nullptr);
+@@ -615,8 +636,8 @@ static void Mixer_Main()
+     if (QuitSig >= 0)
+         FreeSignal(QuitSig);
+     {
+-        char msg[96];
+-        std::sprintf(msg, "mixer stopped after %ld s: %u blocks of %d frames, %u underruns, mixing %lu ticks (%lu us per block)", (long)(std::time(nullptr) - StatStart), StatBlocks, Blk, StatUnderruns, (unsigned long)StatMixTicks, (unsigned long)(StatBlocks ? (StatMixTicks * 1000000ULL / 709379ULL) / StatBlocks : 0));
++        char msg[256];
++        std::snprintf(msg, sizeof(msg), "mixer stopped after %ld s: %u blocks of %d frames, %u underruns, mixing %lu ticks (%lu us per block)", (long)(std::time(nullptr) - StatStart), StatBlocks, Blk, StatUnderruns, (unsigned long)StatMixTicks, (unsigned long)(StatBlocks ? (StatMixTicks * 1000000ULL / 709379ULL) / StatBlocks : 0));
+         Log(msg);
+     }
+     Backend = MODE_OFF;
+-- 
+2.45.2.windows.1
+

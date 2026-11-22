@@ -1,0 +1,17 @@
+# TD GDI mission 1 (default scenario): deploy the MCV, build a power plant
+wait 60
+click 320 58
+wait 40
+click 500 242
+wait 250
+click 560 7
+wait 80
+click 508 198
+wait 20
+click 508 198
+wait 150
+dump
+click 532 205
+wait 400
+dump
+wait 100

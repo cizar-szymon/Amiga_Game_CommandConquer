@@ -1,0 +1,21 @@
+# stability soak: start the battle scenario, let it run, scroll around now and then
+wait 60
+click 320 58
+wait 40
+click 500 242
+wait 150
+click 560 7
+wait 300
+move 478 200
+wait 100
+move 320 200
+wait 100
+move 2 200
+wait 100
+move 320 200
+wait 100
+move 320 395
+wait 100
+move 320 200
+wait 2500
+quit
