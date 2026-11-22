@@ -52,3 +52,17 @@ Findings:
 - Linker prints `duplicate section .text._ZN4Pipe3EndEv has different size` (inline `Pipe::End` differs between translation units); to look at.
 - Missing optional files (`rules.ini`, `*_slct.aud`) are logged as errors by `RawFileClass`; harmless.
 - Debug build runs without crash to the main loop; Release build not yet run.
+
+## F3 start (22.11.2026, WinUAE)
+
+- `common/video_amiga.cpp`: P96 8-bit CLUT screen 640x400, surfaces in Fast RAM (16-byte aligned), palette via LoadRGB32, one `WritePixelArray(RECTFMT_LUT8)` per frame from `Video_Render_Frame()`, software cursor. F10 dumps the frame to `RAM:cnc-frame.bin` (`tools/frame2png.py` -> PNG; AmiAgent `shot` has wrong colours on 8-bit screens).
+- `common/wwkeyboard_amiga.cpp`: IDCMP keys/mouse -> VK_* (Windows codes), Ctrl-C exits.
+- `common/amiga_watchdog.cpp`: helper process, writes `RAM:cnc-hang.txt` (saved PC + stack; FPU registers sit in the context, map code words with `nm`) when the heartbeat stops for 4 s.
+- Result: intro movie (VQA from MOVIES.MIX) plays with the right palette; mission SCG01EA loads and draws (`docs/mission1-winuae.png`). Endianness of MIX, VQA, palettes, shapes, templates is fine.
+
+Bugs found and fixed:
+- **amiga.lib shadows libnix:** linking `-lamiga` pulled in its `sprintf` (RawDoFmt, 16-bit `%d`/`%c`), so `sprintf("SC%c%02d...")` returned `SC`. Do not link amiga.lib; the `*Tags()` helpers are inline in the NDK headers.
+- **Choose_Side without its assets** (`CHOOSE.WSA`, `SIDES.PAL`, `GDI_SLCT.AUD`, `NOD_SLCT.AUD`, `STRUGGLE.AUD` are in no MIX of the Gold ISOs): the original dereferences a null animation; on a 68k, address 0 is readable and `Copy_Delta_Buffer` wrote over memory, which froze Amiga 1 (22.11.2026, first real-Amiga test, no MOVIES.MIX there). Now the screen is skipped (player stays GDI).
+- Keyboard `Clear()` and stack dumps: `Prog_End(..., true)` is a deliberate NULL write (SmartCrash trap).
+
+Open: side-select assets, sidebar/interface not visible yet (probably missing assets or the `HidPage`/sidebar surface), music (SCORES), sound, real-Amiga run, performance.

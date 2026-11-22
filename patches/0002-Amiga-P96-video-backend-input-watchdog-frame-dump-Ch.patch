@@ -1,0 +1,1036 @@
+From ed61d954864f428b76158edb3da96eee76697048 Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Sun, 22 Nov 2026 19:00:30 +0100
+Subject: [PATCH 2/2] Amiga: P96 video backend, input, watchdog, frame dump,
+ Choose_Side guard, no amiga.lib
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ common/CMakeLists.txt        |   6 +-
+ common/amiga_watchdog.cpp    |  92 ++++++
+ common/video_amiga.cpp       | 554 +++++++++++++++++++++++++++++++++++
+ common/wwkeyboard_amiga.cpp  | 230 ++++++++++++++-
+ tiberiandawn/intro.cpp       |  10 +
+ tiberiandawn/scenarioini.cpp |   3 +
+ tiberiandawn/startup.cpp     |   9 +-
+ 7 files changed, 899 insertions(+), 5 deletions(-)
+ create mode 100644 common/amiga_watchdog.cpp
+ create mode 100644 common/video_amiga.cpp
+
+diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
+index ccf129a..ac36b9e 100644
+--- a/common/CMakeLists.txt
++++ b/common/CMakeLists.txt
+@@ -143,7 +143,7 @@ else()
+ endif()
+ 
+ if(AMIGA)
+-    list(APPEND COMMONV_SRC video_null.cpp wwkeyboard_amiga.cpp)
++    list(APPEND COMMONV_SRC video_amiga.cpp wwkeyboard_amiga.cpp amiga_watchdog.cpp)
+ elseif(DDRAW)
+     list(APPEND COMMONV_SRC video_ddraw.cpp wwkeyboard_win32.cpp)
+     list(APPEND VANILLA_LIBS ddraw)
+@@ -204,6 +204,10 @@ if(BUILD_VANILLATD OR BUILD_VANILLARA OR BUILD_TESTS)
+     if(OPENAL)
+         target_compile_definitions(commonv PUBLIC OPENAL_BUILD)
+     endif()
++    if(AMIGA)
++        target_compile_definitions(commonv PUBLIC NEW_VIDEO_BUILD)
++        # Do not link amiga.lib: its sprintf/printf (RawDoFmt, 16-bit %d/%c) shadow libnix and break formatting.
++    endif()
+     if(SDL2)
+         target_compile_definitions(commonv PUBLIC SDL_BUILD SDL2_BUILD NEW_VIDEO_BUILD)
+     endif()
+diff --git a/common/amiga_watchdog.cpp b/common/amiga_watchdog.cpp
+new file mode 100644
+index 0000000..9ae4893
+--- /dev/null
++++ b/common/amiga_watchdog.cpp
+@@ -0,0 +1,92 @@
++// Hang guard for the Amiga port. A helper process watches a heartbeat counter
++// that the main task bumps on every frame and input poll. If the counter stops
++// for ~4 s the guard writes the main task's saved PC and top of stack to
++// RAM:cnc-hang.txt (map the words to functions with nm + the base address from
++// RAM:cnc-log.txt "main=").
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <exec/types.h>
++#include <exec/tasks.h>
++#include <dos/dos.h>
++#include <dos/dostags.h>
++#include <proto/exec.h>
++#include <proto/dos.h>
++
++volatile unsigned Amiga_Heartbeat = 0;
++
++static struct Task* MainTask = nullptr;
++static volatile int StopFlag = 0;
++static volatile int Finished = 0;
++
++static void Write_Hang(unsigned beats)
++{
++    FILE* f = std::fopen("RAM:cnc-hang.txt", "a");
++    if (!f) {
++        return;
++    }
++    Forbid();
++    unsigned long* sp = (unsigned long*)MainTask->tc_SPReg;
++    unsigned char* b = (unsigned char*)sp;
++    unsigned long pc = ((unsigned long)b[62] << 24) | ((unsigned long)b[63] << 16) | ((unsigned long)b[64] << 8) | b[65];
++    unsigned long words[48];
++    for (int i = 0; i < 48; i++) {
++        words[i] = sp[i];
++    }
++    Permit();
++    std::fprintf(f, "HANG heartbeat %u stuck, saved PC %08lx\n", beats, pc);
++    std::fprintf(f, "regs/stack words:");
++    for (int i = 0; i < 48; i++) {
++        if ((i % 8) == 0) {
++            std::fprintf(f, "\n ");
++        }
++        std::fprintf(f, " %08lx", words[i]);
++    }
++    std::fprintf(f, "\n");
++    std::fclose(f);
++}
++
++static void Watchdog_Main()
++{
++    unsigned last = Amiga_Heartbeat;
++    int stuck = 0;
++    bool reported = false;
++    while (!StopFlag) {
++        Delay(100); // 2 s
++        unsigned now = Amiga_Heartbeat;
++        if (now == last) {
++            if (++stuck >= 2 && !reported) {
++                Write_Hang(now);
++                reported = true;
++            }
++        } else {
++            stuck = 0;
++            reported = false;
++            last = now;
++        }
++    }
++    Finished = 1;
++}
++
++static void Stop_Watchdog()
++{
++    StopFlag = 1;
++    for (int i = 0; i < 300 && !Finished; i++) {
++        Delay(1);
++    }
++}
++
++void Amiga_Start_Watchdog()
++{
++    MainTask = FindTask(NULL);
++    std::atexit(Stop_Watchdog);
++    CreateNewProcTags(NP_Entry,
++                      (ULONG)Watchdog_Main,
++                      NP_Name,
++                      (ULONG) "cnc-watchdog",
++                      NP_Priority,
++                      5UL,
++                      NP_StackSize,
++                      16384UL,
++                      TAG_DONE);
++}
+diff --git a/common/video_amiga.cpp b/common/video_amiga.cpp
+new file mode 100644
+index 0000000..8e91c70
+--- /dev/null
++++ b/common/video_amiga.cpp
+@@ -0,0 +1,554 @@
++// AmigaOS video backend for Vanilla Conquer (Warp / Picasso96, 8-bit CLUT screen).
++//
++// Surfaces are plain 8-bit buffers in Fast RAM (16-byte aligned, pitch = width).
++// The visible surface is presented once per frame from Video_Render_Frame()
++// (called by Frame_Limiter): the game palette is loaded with LoadRGB32 and the
++// indexed pixels go to the card with one WritePixelArray(RECTFMT_LUT8).
++// F3 first version: whole frame every time, software cursor. F4 replaces this
++// with dirty rectangles, MOVE16 into locked VRAM and a hardware cursor.
++#include "gbuffer.h"
++#include "palette.h"
++#include "video.h"
++#include "wwmouse.h"
++#include "rect.h"
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++
++#include <exec/types.h>
++#include <exec/memory.h>
++#include <intuition/intuition.h>
++#include <intuition/screens.h>
++#include <graphics/gfx.h>
++#include <graphics/modeid.h>
++#include <cybergraphx/cybergraphics.h>
++#include <proto/exec.h>
++#include <proto/intuition.h>
++#include <proto/graphics.h>
++#include <proto/cybergraphics.h>
++
++struct Library* CyberGfxBase = nullptr;
++extern struct IntuitionBase* IntuitionBase;
++extern struct GfxBase* GfxBase;
++
++static struct Screen* AmigaScreen = nullptr;
++static struct Window* AmigaWindow = nullptr;
++static UWORD* BlankPointer = nullptr;
++static int ScreenW = 0;
++static int ScreenH = 0;
++static ULONG PaletteTable[2 + 256 * 3];
++static unsigned char RawPalette[768];
++
++static int MouseX = 0;
++static int MouseY = 0;
++
++static struct
++{
++    unsigned char* Data;
++    int W, H, HotX, HotY;
++} GameCursor = {nullptr, 0, 0, 0, 0};
++
++struct Window* Amiga_Get_Window()
++{
++    return AmigaWindow;
++}
++
++void Amiga_Mouse_Set(int x, int y)
++{
++    if (x < 0)
++        x = 0;
++    if (y < 0)
++        y = 0;
++    if (ScreenW && x >= ScreenW)
++        x = ScreenW - 1;
++    if (ScreenH && y >= ScreenH)
++        y = ScreenH - 1;
++    MouseX = x;
++    MouseY = y;
++}
++
++class SurfaceMonitorClassAmiga : public SurfaceMonitorClass
++{
++public:
++    virtual void Restore_Surfaces()
++    {
++    }
++    virtual void Set_Surface_Focus(bool in_focus)
++    {
++    }
++    virtual void Release()
++    {
++    }
++};
++
++SurfaceMonitorClassAmiga AllSurfacesAmiga;
++SurfaceMonitorClass& AllSurfaces = AllSurfacesAmiga;
++
++SurfaceMonitorClass::SurfaceMonitorClass()
++{
++    SurfacesRestored = false;
++}
++
++bool Set_Video_Mode(int w, int h, int bits_per_pixel)
++{
++    if (AmigaScreen) {
++        return true;
++    }
++
++    CyberGfxBase = OpenLibrary((CONST_STRPTR) "cybergraphics.library", 0);
++    ULONG id = INVALID_ID;
++    if (CyberGfxBase) {
++        id = BestModeID(BIDTAG_NominalWidth, w, BIDTAG_NominalHeight, h, BIDTAG_Depth, 8, TAG_DONE);
++    }
++    if (id == INVALID_ID) {
++        std::fprintf(stderr, "No %dx%d 8-bit RTG mode\n", w, h);
++        return false;
++    }
++
++    AmigaScreen = OpenScreenTags(NULL,
++                                 SA_Width,
++                                 (ULONG)w,
++                                 SA_Height,
++                                 (ULONG)h,
++                                 SA_Depth,
++                                 8UL,
++                                 SA_DisplayID,
++                                 id,
++                                 SA_Quiet,
++                                 (ULONG)TRUE,
++                                 SA_ShowTitle,
++                                 (ULONG)FALSE,
++                                 TAG_DONE);
++    if (!AmigaScreen) {
++        return false;
++    }
++
++    AmigaWindow = OpenWindowTags(NULL,
++                                 WA_CustomScreen,
++                                 (ULONG)AmigaScreen,
++                                 WA_Left,
++                                 0UL,
++                                 WA_Top,
++                                 0UL,
++                                 WA_Width,
++                                 (ULONG)AmigaScreen->Width,
++                                 WA_Height,
++                                 (ULONG)AmigaScreen->Height,
++                                 WA_Borderless,
++                                 (ULONG)TRUE,
++                                 WA_Backdrop,
++                                 (ULONG)TRUE,
++                                 WA_Activate,
++                                 (ULONG)TRUE,
++                                 WA_RMBTrap,
++                                 (ULONG)TRUE,
++                                 WA_ReportMouse,
++                                 (ULONG)TRUE,
++                                 WA_IDCMP,
++                                 (ULONG)(IDCMP_RAWKEY | IDCMP_MOUSEMOVE | IDCMP_MOUSEBUTTONS | IDCMP_ACTIVEWINDOW
++                                         | IDCMP_INACTIVEWINDOW),
++                                 TAG_DONE);
++    if (!AmigaWindow) {
++        CloseScreen(AmigaScreen);
++        AmigaScreen = nullptr;
++        return false;
++    }
++
++    // Invisible system pointer; the game draws its own cursor.
++    BlankPointer = (UWORD*)AllocMem(12, MEMF_CHIP | MEMF_CLEAR);
++    if (BlankPointer) {
++        SetPointer(AmigaWindow, BlankPointer, 1, 1, 0, 0);
++    }
++
++    ScreenW = w;
++    ScreenH = h;
++    MouseX = w / 2;
++    MouseY = h / 2;
++    return true;
++}
++
++bool Is_Video_Fullscreen()
++{
++    return true;
++}
++
++void Reset_Video_Mode(void)
++{
++    if (AmigaWindow) {
++        ClearPointer(AmigaWindow);
++        CloseWindow(AmigaWindow);
++        AmigaWindow = nullptr;
++    }
++    if (BlankPointer) {
++        FreeMem(BlankPointer, 12);
++        BlankPointer = nullptr;
++    }
++    if (AmigaScreen) {
++        CloseScreen(AmigaScreen);
++        AmigaScreen = nullptr;
++    }
++    if (CyberGfxBase) {
++        CloseLibrary(CyberGfxBase);
++        CyberGfxBase = nullptr;
++    }
++}
++
++unsigned int Get_Free_Video_Memory(void)
++{
++    return 1000000000;
++}
++
++unsigned Get_Video_Hardware_Capabilities(void)
++{
++    return 0;
++}
++
++void Wait_Vert_Blank(void)
++{
++}
++
++void Wait_Blit(void)
++{
++}
++
++void Get_Video_Scale(float& x, float& y)
++{
++    x = 1.0f;
++    y = 1.0f;
++}
++
++void Set_Video_Cursor_Clip(bool clipped)
++{
++}
++
++void Toggle_Video_Fullscreen()
++{
++}
++
++void Move_Video_Mouse(float xrel, float yrel)
++{
++    Amiga_Mouse_Set(MouseX + (int)xrel, MouseY + (int)yrel);
++}
++
++void Get_Video_Mouse(int& x, int& y)
++{
++    x = MouseX;
++    y = MouseY;
++}
++
++void Set_Video_Cursor(void* cursor, int w, int h, int hotx, int hoty)
++{
++    if (GameCursor.Data) {
++        std::free(GameCursor.Data);
++        GameCursor.Data = nullptr;
++    }
++    if (cursor && w > 0 && h > 0) {
++        GameCursor.Data = (unsigned char*)std::malloc((size_t)w * h);
++        if (GameCursor.Data) {
++            std::memcpy(GameCursor.Data, cursor, (size_t)w * h);
++            GameCursor.W = w;
++            GameCursor.H = h;
++            GameCursor.HotX = hotx;
++            GameCursor.HotY = hoty;
++        }
++    }
++}
++
++void Set_DD_Palette(void* palette)
++{
++    const unsigned char* c = (const unsigned char*)palette;
++    std::memcpy(RawPalette, c, 768);
++    PaletteTable[0] = (256UL << 16) | 0;
++    for (int i = 0; i < 256; i++) {
++        for (int k = 0; k < 3; k++) {
++            unsigned v = c[i * 3 + k] & 63;
++            unsigned v8 = (v << 2) | (v >> 4);
++            PaletteTable[1 + i * 3 + k] = (ULONG)v8 * 0x01010101UL;
++        }
++    }
++    PaletteTable[1 + 256 * 3] = 0;
++    if (AmigaScreen) {
++        LoadRGB32(&AmigaScreen->ViewPort, PaletteTable);
++    }
++}
++
++/*
++** Surfaces: 8-bit buffers in Fast RAM, 16-byte aligned.
++*/
++class VideoSurfaceAmiga;
++static VideoSurfaceAmiga* frontSurface = nullptr;
++
++class VideoSurfaceAmiga : public VideoSurface
++{
++public:
++    VideoSurfaceAmiga(int w, int h, GBC_Enum flags)
++        : Width(w)
++        , Height(h)
++        , Flags(flags)
++        , Raw(nullptr)
++        , Pixels(nullptr)
++        , Present(nullptr)
++    {
++        Raw = (unsigned char*)AllocVec((ULONG)w * h + 16, MEMF_ANY | MEMF_CLEAR);
++        if (Raw) {
++            Pixels = (unsigned char*)(((unsigned long)Raw + 15) & ~15UL);
++        }
++        if (flags & GBC_VISIBLE) {
++            PresentRaw = (unsigned char*)AllocVec((ULONG)w * h + 16, MEMF_ANY | MEMF_CLEAR);
++            if (PresentRaw) {
++                Present = (unsigned char*)(((unsigned long)PresentRaw + 15) & ~15UL);
++            }
++            frontSurface = this;
++        }
++    }
++
++    virtual ~VideoSurfaceAmiga()
++    {
++        if (frontSurface == this) {
++            frontSurface = nullptr;
++        }
++        if (Raw) {
++            FreeVec(Raw);
++        }
++        if (Flags & GBC_VISIBLE) {
++            if (PresentRaw) {
++                FreeVec(PresentRaw);
++            }
++        }
++    }
++
++    virtual void* GetData() const
++    {
++        return Pixels;
++    }
++    virtual int GetPitch() const
++    {
++        return Width;
++    }
++    virtual bool IsAllocated() const
++    {
++        return false;
++    }
++    virtual void AddAttachedSurface(VideoSurface* surface)
++    {
++    }
++    virtual bool IsReadyToBlit()
++    {
++        return true;
++    }
++    virtual bool LockWait()
++    {
++        return Pixels != nullptr;
++    }
++    virtual bool Unlock()
++    {
++        return true;
++    }
++
++    virtual void Blt(const Rect& destRect, VideoSurface* src, const Rect& srcRect, bool mask)
++    {
++        VideoSurfaceAmiga* s = (VideoSurfaceAmiga*)src;
++        if (!Pixels || !s->Pixels) {
++            return;
++        }
++        int sx = srcRect.X, sy = srcRect.Y, w = srcRect.Width, h = srcRect.Height;
++        int dx = destRect.X, dy = destRect.Y;
++        // Clip against the source and destination surfaces.
++        if (sx < 0) {
++            dx -= sx;
++            w += sx;
++            sx = 0;
++        }
++        if (sy < 0) {
++            dy -= sy;
++            h += sy;
++            sy = 0;
++        }
++        if (dx < 0) {
++            sx -= dx;
++            w += dx;
++            dx = 0;
++        }
++        if (dy < 0) {
++            sy -= dy;
++            h += dy;
++            dy = 0;
++        }
++        if (sx + w > s->Width)
++            w = s->Width - sx;
++        if (sy + h > s->Height)
++            h = s->Height - sy;
++        if (dx + w > Width)
++            w = Width - dx;
++        if (dy + h > Height)
++            h = Height - dy;
++        if (w <= 0 || h <= 0) {
++            return;
++        }
++        for (int y = 0; y < h; y++) {
++            const unsigned char* sp = s->Pixels + (sy + y) * s->Width + sx;
++            unsigned char* dp = Pixels + (dy + y) * Width + dx;
++            if (mask) {
++                for (int x = 0; x < w; x++) {
++                    if (sp[x] != 0) {
++                        dp[x] = sp[x];
++                    }
++                }
++            } else {
++                std::memmove(dp, sp, (size_t)w);
++            }
++        }
++    }
++
++    virtual void FillRect(const Rect& rect, unsigned char color)
++    {
++        if (!Pixels) {
++            return;
++        }
++        int x0 = rect.X, y0 = rect.Y, x1 = rect.X + rect.Width + 1, y1 = rect.Y + rect.Height + 1;
++        if (x0 < 0)
++            x0 = 0;
++        if (y0 < 0)
++            y0 = 0;
++        if (x1 > Width)
++            x1 = Width;
++        if (y1 > Height)
++            y1 = Height;
++        for (int y = y0; y < y1; y++) {
++            if (x1 > x0) {
++                std::memset(Pixels + y * Width + x0, color, (size_t)(x1 - x0));
++            }
++        }
++    }
++
++    const unsigned char* GetFrontPixels() const { return Pixels; }
++    int GetFrontWidth() const { return Width; }
++    int GetFrontHeight() const { return Height; }
++
++    // Send the frame to the screen.
++    void RenderSurface()
++    {
++        if (!Pixels || !AmigaWindow) {
++            return;
++        }
++        const unsigned char* src = Pixels;
++        if (GameCursor.Data && Present && !Get_Mouse_State()) {
++            std::memcpy(Present, Pixels, (size_t)Width * Height);
++            int cx = MouseX - GameCursor.HotX, cy = MouseY - GameCursor.HotY;
++            for (int y = 0; y < GameCursor.H; y++) {
++                int py = cy + y;
++                if (py < 0 || py >= Height)
++                    continue;
++                for (int x = 0; x < GameCursor.W; x++) {
++                    int px = cx + x;
++                    if (px < 0 || px >= Width)
++                        continue;
++                    unsigned char c = GameCursor.Data[y * GameCursor.W + x];
++                    if (c != 0) {
++                        Present[py * Width + px] = c;
++                    }
++                }
++            }
++            src = Present;
++        }
++        WritePixelArray((APTR)src, 0, 0, (UWORD)Width, AmigaWindow->RPort, 0, 0, (UWORD)Width, (UWORD)Height,
++                        RECTFMT_LUT8);
++    }
++
++private:
++    int Width;
++    int Height;
++    GBC_Enum Flags;
++    unsigned char* Raw;
++    unsigned char* Pixels;
++    unsigned char* PresentRaw = nullptr;
++    unsigned char* Present;
++};
++
++static void* WatchObj = nullptr;
++static void* WatchVptr = nullptr;
++static unsigned FrameNo = 0;
++unsigned KbdPolls = 0;
++extern volatile unsigned Amiga_Heartbeat;
++
++void Amiga_Watch(void* obj)
++{
++    WatchObj = obj;
++    WatchVptr = *(void**)obj;
++}
++
++static void Check_Watch()
++{
++    FrameNo++;
++    Amiga_Heartbeat++;
++    if ((FrameNo % 50) == 1) {
++        FILE* hf = std::fopen("RAM:cnc-log.txt", "a");
++        if (hf) {
++            std::fprintf(hf, "frame %u polls %u\n", FrameNo, KbdPolls);
++            std::fclose(hf);
++        }
++    }
++    if (WatchObj && *(void**)WatchObj != WatchVptr) {
++        FILE* f = std::fopen("RAM:cnc-log.txt", "a");
++        if (f) {
++            unsigned long* w = (unsigned long*)WatchObj;
++            std::fprintf(f, "WATCH frame %u: object %p vptr %p -> %p; words: %08lx %08lx %08lx %08lx\n", FrameNo, WatchObj, WatchVptr, *(void**)WatchObj, w[0], w[1], w[2], w[3]);
++            std::fclose(f);
++        }
++        WatchVptr = *(void**)WatchObj;
++    }
++}
++
++static bool DumpRequested = false;
++
++void Amiga_Request_Frame_Dump()
++{
++    DumpRequested = true;
++}
++
++static void Dump_Frame(const unsigned char* pixels, int w, int h)
++{
++    FILE* f = std::fopen("RAM:cnc-frame.bin", "wb");
++    if (!f) {
++        return;
++    }
++    unsigned char hdr[8] = {'C', 'N', 'C', 'F', (unsigned char)(w >> 8), (unsigned char)w, (unsigned char)(h >> 8), (unsigned char)h};
++    std::fwrite(hdr, 1, 8, f);
++    std::fwrite(RawPalette, 1, 768, f);
++    std::fwrite(pixels, 1, (size_t)w * h, f);
++    std::fclose(f);
++}
++
++void Video_Render_Frame()
++{
++    Check_Watch();
++    if (frontSurface) {
++        frontSurface->RenderSurface();
++        if (DumpRequested) {
++            DumpRequested = false;
++            Dump_Frame(frontSurface->GetFrontPixels(), frontSurface->GetFrontWidth(), frontSurface->GetFrontHeight());
++        }
++    }
++}
++
++/*
++** Video
++*/
++Video::Video()
++{
++}
++
++Video::~Video()
++{
++}
++
++Video& Video::Shared()
++{
++    static Video video;
++    return video;
++}
++
++VideoSurface* Video::CreateSurface(int w, int h, GBC_Enum flags)
++{
++    return new VideoSurfaceAmiga(w, h, flags);
++}
+diff --git a/common/wwkeyboard_amiga.cpp b/common/wwkeyboard_amiga.cpp
+index 25a983d..c134d5a 100644
+--- a/common/wwkeyboard_amiga.cpp
++++ b/common/wwkeyboard_amiga.cpp
+@@ -1,10 +1,104 @@
+ // AmigaOS keyboard/mouse backend for Vanilla Conquer.
+-// F2 stub: links and does nothing. F3 fills Fill_Buffer_From_System from the
+-// Intuition window IDCMP (RAWKEY, mouse) and maps Amiga raw codes to VK_*.
++// Events come from the IDCMP port of the window opened by video_amiga.cpp.
++// Amiga raw key codes are mapped to the Windows-style VK_* codes the engine uses.
++// Ctrl-C ends the program (needed for AmiAgent stop/deploy).
+ #include "macros.h"
+ #include "wwkeyboard.h"
+ #include "video.h"
+ #include "settings.h"
++#include <cstdlib>
++#include <cstdio>
++
++#include <exec/types.h>
++#include <intuition/intuition.h>
++#include <devices/inputevent.h>
++#include <dos/dos.h>
++#include <proto/exec.h>
++#include <proto/intuition.h>
++
++struct Window* Amiga_Get_Window();
++void Amiga_Mouse_Set(int x, int y);
++void Amiga_Request_Frame_Dump();
++extern unsigned KbdPolls;
++extern volatile unsigned Amiga_Heartbeat;
++void Focus_Loss();
++void Focus_Restore();
++
++// Amiga raw key code -> VK_* (0 = unmapped).
++static unsigned char RawToVK[128];
++
++static void InitKeyMap()
++{
++    static bool done = false;
++    if (done) {
++        return;
++    }
++    done = true;
++    unsigned char* m = RawToVK;
++    // top row 1..9 0
++    for (int i = 0; i < 9; i++) {
++        m[0x01 + i] = (unsigned char)(VK_1 + i);
++    }
++    m[0x0A] = VK_0;
++    m[0x00] = VK_NONE_C0; // `
++    m[0x0B] = VK_NONE_BD; // -
++    m[0x0C] = VK_NONE_BB; // =
++    m[0x0D] = VK_NONE_DC; // backslash
++    static const unsigned char row1[] = {VK_Q, VK_W, VK_E, VK_R, VK_T, VK_Y, VK_U, VK_I, VK_O, VK_P};
++    for (int i = 0; i < 10; i++) {
++        m[0x10 + i] = row1[i];
++    }
++    m[0x1A] = VK_NONE_DB; // [
++    m[0x1B] = VK_NONE_DD; // ]
++    static const unsigned char row2[] = {VK_A, VK_S, VK_D, VK_F, VK_G, VK_H, VK_J, VK_K, VK_L};
++    for (int i = 0; i < 9; i++) {
++        m[0x20 + i] = row2[i];
++    }
++    m[0x29] = VK_NONE_BA; // ;
++    m[0x2A] = VK_NONE_DE; // '
++    static const unsigned char row3[] = {VK_Z, VK_X, VK_C, VK_V, VK_B, VK_N, VK_M};
++    for (int i = 0; i < 7; i++) {
++        m[0x31 + i] = row3[i];
++    }
++    m[0x38] = VK_NONE_BC; // ,
++    m[0x39] = VK_NONE_BE; // .
++    m[0x3A] = VK_NONE_BF; // /
++    m[0x0F] = VK_NUMPAD0;
++    m[0x1D] = VK_NUMPAD1;
++    m[0x1E] = VK_NUMPAD2;
++    m[0x1F] = VK_NUMPAD3;
++    m[0x2D] = VK_NUMPAD4;
++    m[0x2E] = VK_NUMPAD5;
++    m[0x2F] = VK_NUMPAD6;
++    m[0x3D] = VK_NUMPAD7;
++    m[0x3E] = VK_NUMPAD8;
++    m[0x3F] = VK_NUMPAD9;
++    m[0x40] = VK_SPACE;
++    m[0x41] = VK_BACK;
++    m[0x42] = VK_TAB;
++    m[0x43] = VK_RETURN; // keypad enter
++    m[0x44] = VK_RETURN;
++    m[0x45] = VK_ESCAPE;
++    m[0x46] = VK_DELETE;
++    m[0x4A] = VK_SUBTRACT;
++    m[0x4C] = VK_UP;
++    m[0x4D] = VK_DOWN;
++    m[0x4E] = VK_RIGHT;
++    m[0x4F] = VK_LEFT;
++    for (int i = 0; i < 10; i++) {
++        m[0x50 + i] = (unsigned char)(VK_F1 + i);
++    }
++    m[0x5C] = VK_DIVIDE;
++    m[0x5D] = VK_MULTIPLY;
++    m[0x5E] = VK_ADD;
++    m[0x5F] = VK_HELP;
++    m[0x60] = VK_SHIFT;
++    m[0x61] = VK_SHIFT;
++    m[0x62] = VK_CAPITAL;
++    m[0x63] = VK_CONTROL;
++    m[0x64] = VK_MENU;
++    m[0x65] = VK_MENU;
++}
+ 
+ class WWKeyboardClassAmiga : public WWKeyboardClass
+ {
+@@ -12,12 +106,142 @@ public:
+     virtual ~WWKeyboardClassAmiga()
+     {
+     }
++
+     virtual void Fill_Buffer_From_System(void)
+     {
++        InitKeyMap();
++        KbdPolls++;
++        Amiga_Heartbeat++;
++        if (SetSignal(0, 0) & SIGBREAKF_CTRL_C) {
++            std::exit(0);
++        }
++        struct Window* win = Amiga_Get_Window();
++        if (!win) {
++            return;
++        }
++        struct IntuiMessage* msg;
++        while (!Is_Buffer_Full() && (msg = (struct IntuiMessage*)GetMsg(win->UserPort)) != NULL) {
++            ULONG cls = msg->Class;
++            UWORD code = msg->Code;
++            WORD mx = msg->MouseX;
++            WORD my = msg->MouseY;
++            ReplyMsg((struct Message*)msg);
++            {
++                FILE* ef = std::fopen("RAM:cnc-log.txt", "a");
++                if (ef) {
++                    std::fprintf(ef, "event class %lx code %x poll %u\n", (unsigned long)cls, (unsigned)code, KbdPolls);
++                    std::fclose(ef);
++                }
++            }
++
++            switch (cls) {
++            case IDCMP_RAWKEY: {
++                bool release = (code & IECODE_UP_PREFIX) != 0;
++                if ((code & 0x7F) == 0x59 && !release) {
++                    Amiga_Request_Frame_Dump(); // F10: frame dump to RAM:cnc-frame.bin
++                }
++                unsigned char vk = RawToVK[code & 0x7F];
++                if (vk) {
++                    Put_Key_Message(vk, release);
++                }
++            } break;
++            case IDCMP_MOUSEMOVE:
++                Amiga_Mouse_Set(mx, my);
++                break;
++            case IDCMP_MOUSEBUTTONS: {
++                Amiga_Mouse_Set(mx, my);
++                int x, y;
++                Get_Video_Mouse(x, y);
++                unsigned short key = 0;
++                bool release = false;
++                switch (code) {
++                case SELECTDOWN:
++                    key = VK_LBUTTON;
++                    break;
++                case SELECTUP:
++                    key = VK_LBUTTON;
++                    release = true;
++                    break;
++                case MENUDOWN:
++                    key = VK_RBUTTON;
++                    break;
++                case MENUUP:
++                    key = VK_RBUTTON;
++                    release = true;
++                    break;
++                case MIDDLEDOWN:
++                    key = VK_MBUTTON;
++                    break;
++                case MIDDLEUP:
++                    key = VK_MBUTTON;
++                    release = true;
++                    break;
++                }
++                if (key) {
++                    Put_Mouse_Message(key, x, y, release);
++                }
++            } break;
++            case IDCMP_ACTIVEWINDOW:
++                Focus_Restore();
++                break;
++            case IDCMP_INACTIVEWINDOW:
++                Focus_Loss();
++                break;
++            }
++        }
+     }
++
+     virtual KeyASCIIType To_ASCII(unsigned short key)
+     {
+-        (void)key;
++        if (key & WWKEY_RLS_BIT) {
++            return KA_NONE;
++        }
++        bool shift = (key & WWKEY_SHIFT_BIT) != 0;
++        unsigned vk = key & 0xFF;
++        if (vk >= VK_A && vk <= VK_Z) {
++            return (KeyASCIIType)(shift ? ('A' + (vk - VK_A)) : ('a' + (vk - VK_A)));
++        }
++        if (vk >= VK_0 && vk <= VK_9) {
++            static const char shifted[] = ")!@#$%^&*(";
++            return (KeyASCIIType)(shift ? shifted[vk - VK_0] : ('0' + (vk - VK_0)));
++        }
++        switch (vk) {
++        case VK_SPACE:
++            return (KeyASCIIType)' ';
++        case VK_RETURN:
++            return (KeyASCIIType)13;
++        case VK_BACK:
++            return (KeyASCIIType)8;
++        case VK_TAB:
++            return (KeyASCIIType)9;
++        case VK_ESCAPE:
++            return (KeyASCIIType)27;
++        case VK_NONE_BA:
++            return (KeyASCIIType)(shift ? ':' : ';');
++        case VK_NONE_BB:
++            return (KeyASCIIType)(shift ? '+' : '=');
++        case VK_NONE_BC:
++            return (KeyASCIIType)(shift ? '<' : ',');
++        case VK_NONE_BD:
++            return (KeyASCIIType)(shift ? '_' : '-');
++        case VK_NONE_BE:
++            return (KeyASCIIType)(shift ? '>' : '.');
++        case VK_NONE_BF:
++            return (KeyASCIIType)(shift ? '?' : '/');
++        case VK_NONE_C0:
++            return (KeyASCIIType)(shift ? '~' : '`');
++        case VK_NONE_DB:
++            return (KeyASCIIType)(shift ? '{' : '[');
++        case VK_NONE_DC:
++            return (KeyASCIIType)(shift ? '|' : '\\');
++        case VK_NONE_DD:
++            return (KeyASCIIType)(shift ? '}' : ']');
++        case VK_NONE_DE:
++            return (KeyASCIIType)(shift ? '"' : '\'');
++        }
++        if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) {
++            return (KeyASCIIType)('0' + (vk - VK_NUMPAD0));
++        }
+         return KA_NONE;
+     }
+ };
+diff --git a/tiberiandawn/intro.cpp b/tiberiandawn/intro.cpp
+index 6872228..0f06395 100644
+--- a/tiberiandawn/intro.cpp
++++ b/tiberiandawn/intro.cpp
+@@ -91,6 +91,16 @@ void Choose_Side(void)
+ 
+ #else
+ 
++    /*
++    ** The side selection screen needs CHOOSE.WSA and friends. Without them the original code
++    ** dereferences a null animation, so skip the screen and keep the player as GDI.
++    */
++    if (!CCFileClass("CHOOSE.WSA").Is_Available()) {
++        Whom = HOUSE_GOOD;
++        ScenPlayer = SCEN_PLAYER_GDI;
++        return;
++    }
++
+     static unsigned char const _yellowpal[] = {
+         0x0, 0xC9, 0xBA, 0x93, 0x61, 0xEE, 0xee, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0};
+     static unsigned char const _redpal[] = {
+diff --git a/tiberiandawn/scenarioini.cpp b/tiberiandawn/scenarioini.cpp
+index 8e906f4..89fe12f 100644
+--- a/tiberiandawn/scenarioini.cpp
++++ b/tiberiandawn/scenarioini.cpp
+@@ -45,6 +45,7 @@
+  *   Write_Scenario_Ini -- Write the scenario INI file.                                        *
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
++#include "debugstring.h"
+ #include "function.h"
+ #include "common/irandom.h"
+ #include "ccini.h"
+@@ -144,6 +145,7 @@ void Set_Scenario_Name(char* buf, int scenario, ScenarioPlayerType player, Scena
+         */
+         for (i = SCEN_VAR_FIRST; i < SCEN_VAR_COUNT; i++) {
+             sprintf(fname, "SC%c%02d%c%c.INI", c_player, scenario, c_dir, 'A' + i);
++            if (scenario == 1 && c_player == 'G') DBG_LOG("probe %s available=%d", fname, (int)CCFileClass(fname).Is_Available());
+             if (!CCFileClass(fname).Is_Available()) {
+                 break;
+             }
+@@ -181,6 +183,7 @@ void Set_Scenario_Name(char* buf, int scenario, ScenarioPlayerType player, Scena
+     /*
+     ** generate the filename
+     */
++    DBG_LOG("Set_Scenario_Name player=%d prefix=%d scenario=%d dir=%d var=%d", (int)player, (int)c_player, scenario, (int)c_dir, (int)c_var);
+     sprintf(buf, "SC%c%02d%c%c", c_player, scenario, c_dir, c_var);
+ }
+ 
+diff --git a/tiberiandawn/startup.cpp b/tiberiandawn/startup.cpp
+index a176066..62e80be 100644
+--- a/tiberiandawn/startup.cpp
++++ b/tiberiandawn/startup.cpp
+@@ -201,7 +201,7 @@ int DLL_Startup(const char* command_line_in)
+ int main(int argc, char** argv)
+ {
+ #ifdef __amigaos__
+-    { FILE* lf = fopen("RAM:cnc-log.txt", "w"); if (lf) { fprintf(lf, "main=%p\n", (void*)&main); fclose(lf); } } Debug_String_File("RAM:cnc-debug.txt");
++    { FILE* lf = fopen("RAM:cnc-log.txt", "w"); if (lf) { fprintf(lf, "main=%p\n", (void*)&main); fclose(lf); } } Debug_String_File("RAM:cnc-debug.txt"); { extern void Amiga_Start_Watchdog(); Amiga_Start_Watchdog(); }
+ #endif
+     UtfArgs args(argc, argv);
+     CCDebugString("C&C95 - Starting up.\n");
+@@ -235,7 +235,14 @@ int main(int argc, char** argv)
+ 
+         CCFileClass cfile("CONQUER.INI");
+ 
++#ifdef __amigaos__
++        { extern void Amiga_Watch(void*); Keyboard = CreateWWKeyboardClass(); Amiga_Watch(Keyboard); }
++#else
+         Keyboard = CreateWWKeyboardClass();
++#endif
++#ifdef __amigaos__
++        DBG_LOG("Keyboard=%p vptr=%p slot8=%p", (void*)Keyboard, *(void**)Keyboard, ((void**)(*(void***)Keyboard))[8]);
++#endif
+ 
+ #ifdef JAPANESE
+         //////////////////////////////////////if(!ForceEnglish) KBLanguage = 1;
+-- 
+2.45.2.windows.1
+
