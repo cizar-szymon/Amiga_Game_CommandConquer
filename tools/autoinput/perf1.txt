@@ -1,0 +1,20 @@
+# TD GDI mission 1 (nomovies): main menu -> Start New Game -> difficulty OK -> mission, sidebar, idle, scroll
+wait 60
+click 320 58
+wait 40
+click 500 242
+wait 150
+click 560 7
+wait 150
+dump
+move 1 200
+wait 250
+move 320 200
+wait 100
+move 478 200
+wait 250
+move 320 200
+wait 100
+dump
+wait 50
+quit

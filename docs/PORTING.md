@@ -77,3 +77,14 @@ First attempt froze the machine (see above, Choose_Side null animation); after t
 - The ISOs `GDI95`/`NOD95` (archive.org `gdi-95`) are the German Windows 95 edition without the patch archives. The hi-res sidebar shapes (`HSIDE1.SHP`, `HSTRIP.SHP`, ... in `UPDATEC.MIX`), the side-select assets (`TRANSIT.MIX`), `12GREEN.FNT`/`SIDES.PAL` (`UPDATE.MIX`) and the English `CCLOCAL.MIX`/`LOCAL.MIX` come from the repack `command-aand-conquer-gold` (archive.org, Gold 1.04a; single files fetched from inside the zip). Dev set: `data/td2/` (flat; `Change_Local_Dir` now accepts the data dir itself as the `.` disc, AmigaDOS has no `.` entry). Not the officially supported source (README of Vanilla Conquer) - decide what players are told to use before a release.
 - In 640x400 the sidebar is hidden until the **Sidebar** tab (top right) is clicked; `docs/mission1-sidebar.png` shows it working (tabs, radar logo, Repair/Sell/Map, two build columns, power bar).
 - Test switches in the program drawer: `nomovies` (skips intro, side select and briefings; gameplay tests start in the mission), `autoinput.on` + `autoinput.txt` (scripts in `tools/autoinput/`: wait, move, click, rclick, drag, key, dump, quit).
+
+## Performance table (Amiga 1, A1200 + Warp 1260 Extreme, 640x400x8, GDI mission 1, sidebar open, GameSpeed=0)
+
+Measured with the in-program profiler (`RAM:cnc-log.txt`, lines `PROF` and `SLOTS`, ReadEClock, per frame; Debug build, `autoinput` script `tools/autoinput/perf1.txt`).
+
+| Step | us/frame | fps | Note |
+|---|---|---|---|
+| Baseline | 79 000 | 12 | 45 ms of it asleep in Frame_Limiter (`std::chrono::steady_clock` too coarse -> sleep requests of 8.3, 16.6, 25 ... ms; first `Delay()` based sleep, then timer.device, same result) |
+| E-Clock time source (`Amiga_Micros64`) in Frame_Limiter and `WinTimerClass::Now` | 33 000 | 28-30 | sleep 0 |
+
+Breakdown after that (us/frame): Map.Render 15 000 (Draw_It 7 000-10 000, Blit_Display HidPage->SeenBuff 7 400), present (WritePixelArray 640x400 LUT8) 14 600, Logic.AI 2 400-5 000, input 300, sort 190, color cycle 220, LoadRGB32 20. Next: present via locked bitmap + MOVE16 (plan: ~60 MB/s = 4 ms), skip unchanged frames, remove the HidPage->SeenBuff copy, Draw_It inner loops.

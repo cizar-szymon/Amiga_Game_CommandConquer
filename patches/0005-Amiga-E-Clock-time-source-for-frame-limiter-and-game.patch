@@ -1,0 +1,502 @@
+From cca9a4c7397bb901304ee899cdf6987bf959e867 Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Sun, 22 Nov 2026 20:07:07 +0100
+Subject: [PATCH 5/5] Amiga: E-Clock time source for frame limiter and game
+ timer (12 -> 29 fps), profiler slots
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ common/amiga_prof.h      | 48 ++++++++++++++++++++++
+ common/framelimit.cpp    | 47 ++++++++++++++++++++++
+ common/mssleep.h         | 12 ++++--
+ common/timer.cpp         | 16 ++++++--
+ common/video_amiga.cpp   | 86 ++++++++++++++++++++++++++++++++++++++--
+ tiberiandawn/conquer.cpp | 26 +++++++++---
+ tiberiandawn/gscreen.cpp | 15 +++++--
+ 7 files changed, 231 insertions(+), 19 deletions(-)
+ create mode 100644 common/amiga_prof.h
+
+diff --git a/common/amiga_prof.h b/common/amiga_prof.h
+new file mode 100644
+index 0000000..8f118b0
+--- /dev/null
++++ b/common/amiga_prof.h
+@@ -0,0 +1,48 @@
++// Scope timers for the Amiga port (ReadEClock based). PROF_SCOPE(id) adds the time of the
++// enclosing block to slot id; video_amiga.cpp prints the slots (us per frame) every 50 frames.
++#ifndef AMIGA_PROF_H
++#define AMIGA_PROF_H
++
++#ifdef __amigaos__
++extern unsigned long long Amiga_Prof_Now();
++extern unsigned long long Amiga_Prof_Acc[16];
++
++struct AmigaProfScope
++{
++    int Id;
++    unsigned long long T0;
++    explicit AmigaProfScope(int id)
++        : Id(id)
++        , T0(Amiga_Prof_Now())
++    {
++    }
++    ~AmigaProfScope()
++    {
++        Amiga_Prof_Acc[Id] += Amiga_Prof_Now() - T0;
++    }
++};
++#define PROF_SCOPE(id) AmigaProfScope amiga_prof_scope_##id(id)
++#else
++#define PROF_SCOPE(id) ((void)0)
++#endif
++
++/* slot ids */
++#define PROF_MAINLOOP 0
++#define PROF_MAPRENDER 1
++#define PROF_LOGIC 2
++#define PROF_BLT 3
++#define PROF_PRESENT 4
++#define PROF_INPUT 5
++#define PROF_SPRITES 6
++#define PROF_COLORCYCLE 7
++#define PROF_CALLBACK 8
++#define PROF_PALETTE 9
++#define PROF_FRAMELIMIT 10
++#define PROF_SYNCWAIT 11
++#define PROF_DRAWIT 12
++#define PROF_BUTTONS 13
++#define PROF_BLITDISP 14
++#define PROF_SORT 15
++#define PROF_SLEEP 6
++
++#endif
+diff --git a/common/framelimit.cpp b/common/framelimit.cpp
+index 2a46e07..daa7930 100644
+--- a/common/framelimit.cpp
++++ b/common/framelimit.cpp
+@@ -1,7 +1,11 @@
+ #include "framelimit.h"
++#include "amiga_prof.h"
+ #include "wwmouse.h"
+ #include "settings.h"
+ #include <chrono>
++#ifdef __amigaos__
++extern unsigned long long Amiga_Micros64();
++#endif
+ 
+ #ifdef _WIN32
+ #include <windows.h>
+@@ -15,8 +19,50 @@ extern WWMouseClass* WWMouse;
+ void Video_Render_Frame();
+ #endif
+ 
++#ifdef __amigaos__
++/*
++** Amiga: std::chrono::steady_clock is far too coarse here (the limiter then sleeps for tens of
++** milliseconds per frame), so the schedule runs on the E-Clock in microseconds.
++*/
++void Frame_Limiter(FrameLimitFlags flags)
++{
++    PROF_SCOPE(PROF_FRAMELIMIT);
++    static long long frame_start = (long long)Amiga_Micros64();
++    static long long render_avg = 0; /* microseconds */
++
++    long long render_start = (long long)Amiga_Micros64();
++    long long render_remaining = frame_start - render_start;
++
++    if (!(flags & FrameLimitFlags::FL_FORCE_RENDER) && render_remaining > render_avg) {
++        if (!(flags & FrameLimitFlags::FL_NO_BLOCK)) {
++            us_sleep(unsigned(render_remaining));
++        } else {
++            us_sleep(1000); // Unconditionally yield for minimum time.
++        }
++        return;
++    }
++
++    Video_Render_Frame();
++
++    long long render_end = (long long)Amiga_Micros64();
++    long long render_time = render_end - render_start;
++    render_avg = (render_avg + render_time) / 2;
++
++    if (Settings.Video.FrameLimit > 0 && !(flags & FrameLimitFlags::FL_NO_BLOCK)) {
++        long long min_frame_time = 1000000 / Settings.Video.FrameLimit;
++        long long cur_frame_time = render_end - frame_start;
++        if (cur_frame_time < min_frame_time) {
++            frame_start += min_frame_time;
++            us_sleep(unsigned(min_frame_time - cur_frame_time));
++        } else {
++            frame_start = render_end;
++        }
++    }
++}
++#else
+ void Frame_Limiter(FrameLimitFlags flags)
+ {
++    PROF_SCOPE(PROF_FRAMELIMIT);
+     static auto frame_start = std::chrono::steady_clock::now();
+ #ifdef NEW_VIDEO_BUILD
+     static auto render_avg = 0;
+@@ -58,3 +104,4 @@ void Frame_Limiter(FrameLimitFlags flags)
+         }
+     }
+ }
++#endif // __amigaos__
+diff --git a/common/mssleep.h b/common/mssleep.h
+index dff04e2..d36135e 100644
+--- a/common/mssleep.h
++++ b/common/mssleep.h
+@@ -12,6 +12,8 @@
+ #include <synchapi.h>
+ #elif defined(__amigaos__)
+ #include <proto/dos.h>
++#include "amiga_prof.h"
++void Amiga_Sleep_Us(unsigned us);
+ #include <proto/exec.h>
+ #else /* Assuming recent posix*/
+ #ifndef __USE_POSIX199309
+@@ -31,8 +33,9 @@ static inline void us_sleep(unsigned us)
+ #ifdef _WIN32
+     Sleep((us + 999) / 1000);
+ #elif defined(__amigaos__)
+-    /* TODO F3: timer.device microsecond wait; Delay() granularity is 20 ms. */
+-    if (us >= 20000) Delay(us / 20000); else Delay(0);
++    /* timer.device UNIT_MICROHZ wait (video_amiga.cpp). */
++    PROF_SCOPE(PROF_SLEEP);
++    Amiga_Sleep_Us(us);
+ #else
+     struct timespec ts;
+     ts.tv_sec = us / 1000000;
+@@ -49,8 +52,9 @@ static inline void ms_sleep(unsigned ms)
+ #ifdef _WIN32
+     Sleep(ms);
+ #elif defined(__amigaos__)
+-    /* TODO F3: timer.device microsecond wait; Delay() granularity is 20 ms. */
+-    if (ms >= 20) Delay(ms / 20); else Delay(0);
++    /* timer.device UNIT_MICROHZ wait (video_amiga.cpp). */
++    PROF_SCOPE(PROF_SLEEP);
++    Amiga_Sleep_Us(ms * 1000u);
+ #else
+     struct timespec ts;
+     ts.tv_sec = ms / 1000;
+diff --git a/common/timer.cpp b/common/timer.cpp
+index ea6a5c0..b3cc6d0 100644
+--- a/common/timer.cpp
++++ b/common/timer.cpp
+@@ -271,8 +271,8 @@ unsigned int WinTimerClass::Get_System_Tick_Count()
+     if (Frequency == 0) {
+         return 0;
+     }
+-    unsigned long long delta = Now() - Start;
+-    return (unsigned int)(delta / (1000 / Frequency));
++    unsigned int delta = (unsigned int)(Now() - Start);
++    return delta / (1000u / Frequency);
+ }
+ 
+ /***********************************************************************************************
+@@ -293,14 +293,22 @@ unsigned int WinTimerClass::Get_User_Tick_Count()
+     if (Frequency == 0) {
+         return 0;
+     }
+-    unsigned long long delta = Now() - Start;
+-    return (unsigned int)(delta / (1000 / Frequency));
++    unsigned int delta = (unsigned int)(Now() - Start);
++    return delta / (1000u / Frequency);
+ }
+ 
++#ifdef __amigaos__
++extern unsigned long long Amiga_Millis64();
++unsigned long long WinTimerClass::Now()
++{
++    return Amiga_Millis64();
++}
++#else
+ unsigned long long WinTimerClass::Now()
+ {
+     return duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count();
+ }
++#endif
+ 
+ int SystemTimerClass::operator()() const
+ {
+diff --git a/common/video_amiga.cpp b/common/video_amiga.cpp
+index b542ce7..2ada03b 100644
+--- a/common/video_amiga.cpp
++++ b/common/video_amiga.cpp
+@@ -11,6 +11,7 @@
+ #include "video.h"
+ #include "wwmouse.h"
+ #include "rect.h"
++#include "amiga_prof.h"
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
+@@ -25,6 +26,7 @@
+ #include <proto/exec.h>
+ #include <proto/intuition.h>
+ #include <proto/graphics.h>
++#include <proto/dos.h>
+ #include <proto/cybergraphics.h>
+ #include <devices/timer.h>
+ #include <proto/timer.h>
+@@ -270,6 +272,7 @@ void Set_DD_Palette(void* palette)
+     }
+     PaletteTable[1 + 256 * 3] = 0;
+     if (AmigaScreen) {
++        PROF_SCOPE(PROF_PALETTE);
+         LoadRGB32(&AmigaScreen->ViewPort, PaletteTable);
+     }
+ }
+@@ -349,6 +352,7 @@ public:
+ 
+     virtual void Blt(const Rect& destRect, VideoSurface* src, const Rect& srcRect, bool mask)
+     {
++        PROF_SCOPE(PROF_BLT);
+         VideoSurfaceAmiga* s = (VideoSurfaceAmiga*)src;
+         if (!Pixels || !s->Pixels) {
+             return;
+@@ -520,7 +524,45 @@ static void Prof_Open()
+     }
+ }
+ 
+-static unsigned long long Prof_Now()
++unsigned long long Amiga_Prof_Acc[16];
++static struct MsgPort* SleepPort = nullptr;
++static struct timerequest* SleepReq = nullptr;
++
++/* Precise sleep (UNIT_MICROHZ). Below ~100 us the request costs more than it saves: return. */
++void Amiga_Sleep_Us(unsigned us)
++{
++    static unsigned calls = 0;
++    calls++;
++    if (calls > 200 && calls <= 260) {
++        FILE* sf = std::fopen("RAM:cnc-log.txt", "a");
++        if (sf) {
++            std::fprintf(sf, "SLEEP call %u us %u\n", calls, us);
++            std::fclose(sf);
++        }
++    }
++    if (us < 100) {
++        return;
++    }
++    if (!SleepReq) {
++        SleepPort = CreateMsgPort();
++        if (SleepPort) {
++            SleepReq = (struct timerequest*)CreateIORequest(SleepPort, sizeof(struct timerequest));
++            if (SleepReq && OpenDevice((CONST_STRPTR)"timer.device", UNIT_MICROHZ, (struct IORequest*)SleepReq, 0) != 0) {
++                DeleteIORequest((struct IORequest*)SleepReq);
++                SleepReq = nullptr;
++            }
++        }
++        if (!SleepReq) {
++            Delay(1);
++            return;
++        }
++    }
++    SleepReq->tr_node.io_Command = TR_ADDREQUEST;
++    SleepReq->tr_time.tv_secs = us / 1000000u;
++    SleepReq->tr_time.tv_micro = us % 1000000u;
++    DoIO((struct IORequest*)SleepReq);
++}
++unsigned long long Amiga_Prof_Now()
+ {
+     struct EClockVal ev;
+     if (!TimerBase) {
+@@ -530,6 +572,25 @@ static unsigned long long Prof_Now()
+     return ((unsigned long long)ev.ev_hi << 32) | ev.ev_lo;
+ }
+ 
++/* Monotonic microseconds since the first call (E-Clock, 709379 Hz on PAL). */
++unsigned long long Amiga_Micros64()
++{
++    static unsigned long long t0 = 0;
++    Prof_Open();
++    unsigned long long t = Amiga_Prof_Now();
++    if (t0 == 0) {
++        t0 = t;
++    }
++    return EFreq ? ((t - t0) * 1000000ULL) / EFreq : 0;
++}
++
++/* Milliseconds for the game timers; 32-bit arithmetic is enough for 49 days. */
++unsigned long long Amiga_Millis64()
++{
++    return Amiga_Micros64() / 1000ULL;
++}
++
++
+ static void Check_Watch()
+ {
+     FrameNo++;
+@@ -577,10 +638,11 @@ void Video_Render_Frame()
+     Check_Watch();
+     if (frontSurface) {
+         Prof_Open();
+-        unsigned long long t0 = Prof_Now();
++        unsigned long long t0 = Amiga_Prof_Now();
+         frontSurface->RenderSurface();
+-        unsigned long long t1 = Prof_Now();
++        unsigned long long t1 = Amiga_Prof_Now();
+         ProfRender += (t1 - t0);
++        Amiga_Prof_Acc[PROF_PRESENT] += (t1 - t0);
+         if ((FrameNo % 50) == 0 && EFreq) {
+             FILE* pf = std::fopen("RAM:cnc-log.txt", "a");
+             if (pf) {
+@@ -588,6 +650,24 @@ void Video_Render_Frame()
+                 std::fprintf(pf, "PROF 50 frames: render %lu us/frame, wall %lu ms (%lu fps)\n", (unsigned long)((ProfRender * 1000000ULL / EFreq) / 50), (unsigned long)(dt * 1000ULL / EFreq), dt ? (unsigned long)(50ULL * EFreq / dt) : 0UL);
+                 std::fclose(pf);
+             }
++            {
++                FILE* sf = std::fopen("RAM:cnc-log.txt", "a");
++                if (sf) {
++                    std::fprintf(sf, "SLOTS us/frame: mainloop %lu maprender %lu logic %lu blt %lu present %lu input %lu colorcycle %lu callback %lu palette %lu syncwait %lu drawit %lu buttons %lu blitdisplay %lu sort %lu framelimiter %lu sleep %lu\n",
++                                 (unsigned long)(Amiga_Prof_Acc[0] * 1000000ULL / EFreq / 50), (unsigned long)(Amiga_Prof_Acc[1] * 1000000ULL / EFreq / 50),
++                                 (unsigned long)(Amiga_Prof_Acc[2] * 1000000ULL / EFreq / 50), (unsigned long)(Amiga_Prof_Acc[3] * 1000000ULL / EFreq / 50),
++                                 (unsigned long)(Amiga_Prof_Acc[4] * 1000000ULL / EFreq / 50), (unsigned long)(Amiga_Prof_Acc[5] * 1000000ULL / EFreq / 50),
++                                 (unsigned long)(Amiga_Prof_Acc[7] * 1000000ULL / EFreq / 50), (unsigned long)(Amiga_Prof_Acc[8] * 1000000ULL / EFreq / 50),
++                                 (unsigned long)(Amiga_Prof_Acc[9] * 1000000ULL / EFreq / 50), (unsigned long)(Amiga_Prof_Acc[11] * 1000000ULL / EFreq / 50),
++                                 (unsigned long)(Amiga_Prof_Acc[12] * 1000000ULL / EFreq / 50), (unsigned long)(Amiga_Prof_Acc[13] * 1000000ULL / EFreq / 50),
++                                 (unsigned long)(Amiga_Prof_Acc[14] * 1000000ULL / EFreq / 50), (unsigned long)(Amiga_Prof_Acc[15] * 1000000ULL / EFreq / 50),
++                                 (unsigned long)(Amiga_Prof_Acc[10] * 1000000ULL / EFreq / 50), (unsigned long)(Amiga_Prof_Acc[6] * 1000000ULL / EFreq / 50));
++                    std::fclose(sf);
++                }
++                for (int k = 0; k < 16; k++) {
++                    Amiga_Prof_Acc[k] = 0;
++                }
++            }
+             ProfRender = 0;
+             ProfLast = t1;
+         }
+diff --git a/tiberiandawn/conquer.cpp b/tiberiandawn/conquer.cpp
+index ef71a46..2f549ec 100644
+--- a/tiberiandawn/conquer.cpp
++++ b/tiberiandawn/conquer.cpp
+@@ -59,6 +59,7 @@
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
+ #include "function.h"
++#include "amiga_prof.h"
+ #include "common/irandom.h"
+ #include <stdlib.h>
+ #include <stdio.h>
+@@ -1122,6 +1123,7 @@ static void Message_Input(KeyNumType& input)
+  *=============================================================================================*/
+ bool Color_Cycle(void)
+ {
++    PROF_SCOPE(PROF_COLORCYCLE);
+     static CountDownTimerClass _timer(BT_SYSTEM, 0);
+     static CountDownTimerClass _ftimer(BT_SYSTEM, 0);
+     static bool _up = false;
+@@ -1208,6 +1210,7 @@ bool Color_Cycle(void)
+  *=============================================================================================*/
+ void Call_Back(void)
+ {
++    PROF_SCOPE(PROF_CALLBACK);
+ #ifndef DEMO
+     int i;
+     int id;
+@@ -1503,6 +1506,7 @@ static void Sync_Delay(void)
+     **	This accumulates into a running histogram of performance.
+     */
+     SpareTicks += FrameTimer.Time();
++    PROF_SCOPE(PROF_SYNCWAIT);
+     while (FrameTimer.Time()) {
+         Color_Cycle();
+         Call_Back();
+@@ -1544,6 +1548,7 @@ void Reallocate_Big_Shape_Buffer(void);
+ 
+ bool Main_Loop()
+ {
++    PROF_SCOPE(PROF_MAINLOOP);
+     KeyNumType input; // Player input.
+     int x;
+     int y;
+@@ -1619,12 +1624,17 @@ bool Main_Loop()
+         if (SpecialDialog == SDLG_NONE && GameInFocus) {
+ 
+             WWMouse->Erase_Mouse(&HidPage, true);
+-            Map.Input(input, x, y);
++            {
++                PROF_SCOPE(PROF_INPUT);
++                Map.Input(input, x, y);
++            }
+             if (input) {
+                 Keyboard_Process(input);
+             }
+-            //			HidPage.Lock();
+-            Map.Render();
++            {
++                PROF_SCOPE(PROF_MAPRENDER);
++                Map.Render();
++            }
+             //			HidPage.Unlock();
+         }
+     }
+@@ -1643,14 +1653,20 @@ bool Main_Loop()
+     ** layer in the same way, and any processing done that's based on
+     ** the order of this layer will sync on different machines.
+     */
+-    Map.Layer[LAYER_GROUND].Sort();
++    {
++        PROF_SCOPE(PROF_SORT);
++        Map.Layer[LAYER_GROUND].Sort();
++    }
+ 
+     //	Heap_Dump_Check( "Before Logic.AI" );
+ 
+     /*
+     **	AI logic operations are performed here.
+     */
+-    Logic.AI();
++    {
++        PROF_SCOPE(PROF_LOGIC);
++        Logic.AI();
++    }
+ 
+     //	Heap_Dump_Check( "After Logic.AI" );
+ 
+diff --git a/tiberiandawn/gscreen.cpp b/tiberiandawn/gscreen.cpp
+index 4efa828..ddcd516 100644
+--- a/tiberiandawn/gscreen.cpp
++++ b/tiberiandawn/gscreen.cpp
+@@ -44,6 +44,7 @@
+  *   GScreenClass::Remove_A_Button -- Removes a gadget from the game input system.             *
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
++#include "amiga_prof.h"
+ #include "function.h"
+ 
+ #include "common/filepcx.h"
+@@ -367,10 +368,15 @@ void GScreenClass::Render(void)
+ 
+         // WWMouse->Erase_Mouse(&HidPage, TRUE);
+         GraphicViewPortClass* oldpage = Set_Logic_Page(HidPage);
+-        Draw_It(IsToRedraw);
++        {
++            PROF_SCOPE(PROF_DRAWIT);
++            Draw_It(IsToRedraw);
++        }
+ 
+-        if (Buttons)
++        if (Buttons) {
++            PROF_SCOPE(PROF_BUTTONS);
+             Buttons->Draw_All(false);
++        }
+ 
+ #ifdef SCENARIO_EDITOR
+         /*
+@@ -392,7 +398,10 @@ void GScreenClass::Render(void)
+         Messages.Draw();
+ 
+ #ifndef REMASTER_BUILD
+-        Blit_Display();
++        {
++            PROF_SCOPE(PROF_BLITDISP);
++            Blit_Display();
++        }
+ #endif
+         IsToUpdate = false;
+         IsToRedraw = false;
+-- 
+2.45.2.windows.1
+
