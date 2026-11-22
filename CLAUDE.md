@@ -155,7 +155,7 @@ Oryginalny kod pisano na x86 (little-endian), a 68060 jest big-endian. Pliki dan
 | **F6: Red Alert** | Ten sam backend dla RA | Pełna misja RA do przejścia |
 | **F7: sieć (opcjonalnie)** | UDP przez `bsdsocket.library` na `warpNET.device` | Gra 2 Amig z Warpem przez WiFi |
 | **F8: testy** | Warp1260, 1260X, 7060, 560; dla porównania jedna karta Zorro | Lista znanych problemów, poprawki krytyczne |
-| **F9: wydanie** | Paczka LHA, README (firmware 3.0, P96, ustawienia AHI, skąd dane freeware), źródła publicznie | Wydanie zgodne z GPLv3, bez danych gry |
+| **F9: wydanie** | Paczka **ZIP** (nie LHA, `tools/make_zip.py` z uprawnieniami Unix), README (firmware 3.0, P96, ustawienia AHI, skąd dane freeware), źródła publicznie. **WARP HUB:** układ `releases/amiga/<Gra>-<v>.zip` + rozpakowana szuflada `<Gra>/` + `<Gra>.info` (ikona szuflady WARP), `releases/** -text` w `.gitattributes`, `$VER` zgodny z nazwą ZIP-a, `doc/<Gra>_release*.txt` i `doc/Install.txt`, puste szuflady na dane z `ReadMe.txt`, sprawdzenie `check_release.py`, wpis w katalogu WARP HUB (zasady w `PORTING_PLAN.md`, „Wydanie dla WARP HUB”) | Wydanie zgodne z GPLv3, bez danych gry; WARP HUB instaluje je i pokazuje wersję |
 
 ## 8. Metryki docelowe (do potwierdzenia w F1)
 
