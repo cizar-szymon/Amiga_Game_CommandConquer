@@ -127,3 +127,26 @@ Machine facts measured with the benchmark (CPU 100 MHz, subq+bne loop = 10.2 ns,
 Variants tried on a 36x36 sprite (ns per pixel, 25 / 60 / 95 % opaque): original 96 / 150 / 163; fade table folded into a 256 entry table 86 / 119 / 121; hand written 68k loop 90 / 115 / 112; four pixels per long read-modify-write in C 126 / 195 / 213 (the shifts cost more than the saved stores). **In the game none of them helped** (style 7: 8.5 ms original, 9.4 ms with the folded-table version): in the real frame the destination lines and the sprite data are cold and the loop is bound by memory, not by instructions. Reverted, nothing of it is in the port.
 
 Conclusion: the shape drawing will only get faster by drawing fewer pixels or by wide stores (compose a row in registers, one long or `MOVE16` write), not by tighter byte loops. Next target: `UnitClass::AI` / `InfantryClass::AI` (14-17 ms in the battle).
+
+## Battle scene: where the logic time goes (Amiga 1, 22.11.2026)
+
+Probes inside the AI (`PROF_SCOPE_N`, compiled only with `CNC_PROFILE=1`, `docker run -e CNC_PROFILE=1 ...`; slots in `SLOTS2`, counters in `COUNTS`). Heaviest moment, us per frame (inclusive, nested):
+
+| Function | us |
+|---|---|
+| `UnitClass::AI` (42 units) | 9 500-12 000, of it `DriveClass::AI` 7 000-9 400 |
+| `InfantryClass::AI` (52 units) | 5 000-7 700 |
+| `DriveClass::While_Moving` | 2 200-5 700 |
+| `DriveClass::Start_Of_Move` (calls `Basic_Path` -> `Find_Path`) | 2 000-5 800 |
+| `FootClass::Find_Path` | 1 300-5 000 |
+| `FootClass::Mark` (outermost, 450 calls/frame) | 10 500-12 000, of it `ObjectClass::Mark` 7 000-8 000, `CellClass::Redraw_Objects` (outermost, 1 100 calls/frame) 5 300-5 800 |
+| `Greatest_Threat` (all classes), `Evaluate_Object` | < 400 |
+| `TechnoClass::AI`, `MissionClass::AI` | ~900, ~500 |
+
+Calls per frame: `Mark` 450 (foot) / 530 (object), `Occupy_Down/Up` 50, `Overlap_Down` 160, `Overlap_Up` 330, `Redraw_Objects` 1 100.
+
+Experiments: (1) **forced full redraw when more than 300 `Redraw_Objects` calls per frame** (skip `Mark(MARK_CHANGE)` and `Redraw_Objects`, `Map.Flag_To_Redraw(true)` before `Render`): logic -4 ms, but Map.Render 25 -> 49 ms, net loss; the engine dirty-cell scheme is worth keeping. Reverted. (2) Release build instead of Debug: no difference (the `_DEBUG` checks are empty). (3) Probe overhead: heavy scene 48 ms without probes against 49-51 ms with them.
+
+Clean build (no probes) in the battle: 48 ms per frame (21 fps) at the start of the fight with ~95 units, 120 fps at the end. That is enough for the original game speed (15 ticks/s = 66 ms) even in this scene, not yet for `GameSpeed=2` (33 ms).
+
+Candidates left: path finding (re-planned too often by Hunt units; a result cache or a lower re-plan rate changes behaviour, so it needs a decision), the cost of `Mark` (virtual calls and cell array indexing, ~24 us per call), shape drawing by wide stores (~4 ms), `Redraw_Icons` (6 ms, 300 cells x 20 us).

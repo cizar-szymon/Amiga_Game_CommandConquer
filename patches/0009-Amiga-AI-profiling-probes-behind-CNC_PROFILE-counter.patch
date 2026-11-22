@@ -1,0 +1,483 @@
+From a204ae73c8ba31478ab5deb0b279169ebb20bf91 Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Sun, 22 Nov 2026 21:44:16 +0100
+Subject: [PATCH 9/9] Amiga: AI profiling probes behind CNC_PROFILE, counters
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ common/amiga_prof.h       | 25 ++++++++++++++++++++++++-
+ common/keybuff.cpp        |  2 +-
+ common/video_amiga.cpp    | 15 ++++++++++++++-
+ tiberiandawn/cell.cpp     |  7 +++++++
+ tiberiandawn/drive.cpp    |  5 +++++
+ tiberiandawn/findpath.cpp |  2 ++
+ tiberiandawn/foot.cpp     | 10 ++++++++++
+ tiberiandawn/infantry.cpp |  4 ++++
+ tiberiandawn/mission.cpp  |  2 ++
+ tiberiandawn/object.cpp   |  3 +++
+ tiberiandawn/tarcom.cpp   |  2 ++
+ tiberiandawn/techno.cpp   |  5 +++++
+ tiberiandawn/turret.cpp   |  2 ++
+ 13 files changed, 81 insertions(+), 3 deletions(-)
+
+diff --git a/common/amiga_prof.h b/common/amiga_prof.h
+index 2220e9f..7e50670 100644
+--- a/common/amiga_prof.h
++++ b/common/amiga_prof.h
+@@ -3,11 +3,12 @@
+ #ifndef AMIGA_PROF_H
+ #define AMIGA_PROF_H
+ 
+-#ifdef __amigaos__
++#if defined(__amigaos__) && defined(CNC_PROFILE)
+ extern unsigned long long Amiga_Prof_Now();
+ extern unsigned long long Amiga_Prof_Acc[96];
+ extern unsigned long Amiga_Prof_Calls[16];
+ extern unsigned long Amiga_Prof_Pixels[16];
++extern unsigned long Amiga_Prof_Cnt[32];
+ 
+ struct AmigaProfScope
+ {
+@@ -25,9 +26,31 @@ struct AmigaProfScope
+ };
+ #define PROF_SCOPE(id) AmigaProfScope amiga_prof_scope_##id(id)
+ #define PROF_SCOPE_N(var, id) AmigaProfScope var(id)
++#define PROF_COUNT(id) (Amiga_Prof_Cnt[id]++)
++
++/* Time only the outermost activation of a recursive function; nested activations go to slot 23. */
++struct AmigaProfTop
++{
++    int* Depth;
++    AmigaProfScope Scope;
++    AmigaProfTop(int* d, int id)
++        : Depth(d)
++        , Scope(*d == 0 ? id : 23)
++    {
++        ++*Depth;
++    }
++    ~AmigaProfTop()
++    {
++        --*Depth;
++    }
++};
++#define PROF_SCOPE_TOP(var, id) static int var##_depth = 0; AmigaProfTop var(&var##_depth, id)
++
+ #else
+ #define PROF_SCOPE(id) ((void)0)
+ #define PROF_SCOPE_N(var, id) ((void)0)
++#define PROF_COUNT(id) ((void)0)
++#define PROF_SCOPE_TOP(var, id) ((void)0)
+ #endif
+ 
+ /* slot ids */
+diff --git a/common/keybuff.cpp b/common/keybuff.cpp
+index a552e73..829ea0e 100644
+--- a/common/keybuff.cpp
++++ b/common/keybuff.cpp
+@@ -1425,7 +1425,7 @@ void Buffer_Frame_To_Page(int x,
+     // Here we just use the function that will blit the entire frame
+     // using the appropriate effects.
+     if (blit_height > 0 && blit_width > 0) {
+-#ifdef __amigaos__
++#ifdef CNC_PROFILE
+         PROF_SCOPE_N(shape_scope, 64 + (blit_style & 0xF));
+         Amiga_Prof_Calls[blit_style & 0xF]++;
+         Amiga_Prof_Pixels[blit_style & 0xF] += (unsigned long)(blit_width * blit_height);
+diff --git a/common/video_amiga.cpp b/common/video_amiga.cpp
+index d17041a..6e01a19 100644
+--- a/common/video_amiga.cpp
++++ b/common/video_amiga.cpp
+@@ -630,6 +630,7 @@ static void Prof_Open()
+ unsigned long long Amiga_Prof_Acc[96];
+ unsigned long Amiga_Prof_Calls[16];
+ unsigned long Amiga_Prof_Pixels[16];
++unsigned long Amiga_Prof_Cnt[32];
+ static struct MsgPort* SleepPort = nullptr;
+ static struct timerequest* SleepReq = nullptr;
+ 
+@@ -806,7 +807,7 @@ void Video_Render_Frame()
+                     FILE* s2 = std::fopen("RAM:cnc-log.txt", "a");
+                     if (s2) {
+                         std::fprintf(s2, "SLOTS2 us/frame:");
+-                        for (int k = 16; k < 64; k++) {
++                        for (int k = 16; k < 96; k++) {
+                             unsigned long us = (unsigned long)(Amiga_Prof_Acc[k] * 1000000ULL / EFreq / 50);
+                             if (us) {
+                                 std::fprintf(s2, " %d=%lu", k, us);
+@@ -831,6 +832,18 @@ void Video_Render_Frame()
+                         std::fclose(s3);
+                     }
+                 }
++                {
++                    FILE* s4 = std::fopen("RAM:cnc-log.txt", "a");
++                    if (s4) {
++                        std::fprintf(s4, "COUNTS per frame: mark_foot %lu mark_object %lu occupy_down %lu occupy_up %lu overlap_down %lu overlap_up %lu redraw_objects %lu\n",
++                                     Amiga_Prof_Cnt[0] / 50, Amiga_Prof_Cnt[1] / 50, Amiga_Prof_Cnt[2] / 50, Amiga_Prof_Cnt[3] / 50, Amiga_Prof_Cnt[4] / 50,
++                                     Amiga_Prof_Cnt[5] / 50, Amiga_Prof_Cnt[6] / 50);
++                        std::fclose(s4);
++                    }
++                    for (int k = 0; k < 32; k++) {
++                        Amiga_Prof_Cnt[k] = 0;
++                    }
++                }
+                 for (int k = 0; k < 96; k++) {
+                     Amiga_Prof_Acc[k] = 0;
+                 }
+diff --git a/tiberiandawn/cell.cpp b/tiberiandawn/cell.cpp
+index c7ad7f4..2ee733b 100644
+--- a/tiberiandawn/cell.cpp
++++ b/tiberiandawn/cell.cpp
+@@ -72,6 +72,7 @@
+  *   CellClass::Wall_Update -- Updates the imagery for wall objects in cell.                   *
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
++#include "amiga_prof.h"
+ #include "function.h"
+ 
+ /*
+@@ -364,6 +365,8 @@ ObjectClass* CellClass::Cell_Object(int x, int y) const
+  *=============================================================================================*/
+ void CellClass::Redraw_Objects(bool forced)
+ {
++    PROF_COUNT(6);
++    PROF_SCOPE_TOP(prof_top, 95);
+     Validate();
+     CELL cell = Cell_Number();
+ 
+@@ -544,6 +547,7 @@ void CellClass::Recalc_Attributes(void)
+  *=============================================================================================*/
+ void CellClass::Occupy_Down(ObjectClass* object)
+ {
++    PROF_COUNT(2);
+     Validate();
+     ObjectClass* optr;
+ 
+@@ -632,6 +636,7 @@ void CellClass::Occupy_Down(ObjectClass* object)
+  *=============================================================================================*/
+ void CellClass::Occupy_Up(ObjectClass* object)
+ {
++    PROF_COUNT(3);
+     Validate();
+     ObjectClass* optr = NULL; // Working pointer to the objects in the chain.
+ 
+@@ -703,6 +708,7 @@ void CellClass::Occupy_Up(ObjectClass* object)
+  *=============================================================================================*/
+ void CellClass::Overlap_Down(ObjectClass* object)
+ {
++    PROF_COUNT(4);
+     Validate();
+     ObjectClass** ptr = 0;
+ 
+@@ -782,6 +788,7 @@ void CellClass::Overlap_Down(ObjectClass* object)
+  *=============================================================================================*/
+ void CellClass::Overlap_Up(ObjectClass* object)
+ {
++    PROF_COUNT(5);
+     Validate();
+     for (int index = 0; index < sizeof(Overlapper) / sizeof(Overlapper[0]); index++) {
+         if (Overlapper[index] == object) {
+diff --git a/tiberiandawn/drive.cpp b/tiberiandawn/drive.cpp
+index dc4499d..23f339e 100644
+--- a/tiberiandawn/drive.cpp
++++ b/tiberiandawn/drive.cpp
+@@ -52,6 +52,7 @@
+  *   DriveClass::Mark_Track -- Marks the midpoint of the track as occupied.                    *
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
++#include "amiga_prof.h"
+ #include "function.h"
+ 
+ DriveClass::DriveClass(void)
+@@ -177,6 +178,7 @@ int DriveClass::Tiberium_Load(void) const
+  *=============================================================================================*/
+ void DriveClass::Approach_Target(void)
+ {
++    PROF_SCOPE_N(prof_fn, 62);
+     /*
+     **	Only if there is a legal target should the approach check occur.
+     */
+@@ -582,6 +584,7 @@ void DriveClass::Assign_Destination(TARGET target)
+  *=============================================================================================*/
+ bool DriveClass::While_Moving(void)
+ {
++    PROF_SCOPE_N(prof_ai, 86);
+     int actual; // Working movement addition value.
+ 
+     /*
+@@ -882,6 +885,7 @@ void DriveClass::Per_Cell_Process(bool center)
+  *=============================================================================================*/
+ bool DriveClass::Start_Of_Move(void)
+ {
++    PROF_SCOPE_N(prof_ai, 87);
+     FacingType facing; // Direction movement will commence.
+     DirType dir;       // Desired actual facing toward destination.
+     int facediff;      // Difference between current and desired facing.
+@@ -1292,6 +1296,7 @@ bool DriveClass::Start_Of_Move(void)
+  *=============================================================================================*/
+ void DriveClass::AI(void)
+ {
++    PROF_SCOPE_N(prof_ai, 80);
+     FootClass::AI();
+ 
+     /*
+diff --git a/tiberiandawn/findpath.cpp b/tiberiandawn/findpath.cpp
+index 029c3fc..b21d4c2 100644
+--- a/tiberiandawn/findpath.cpp
++++ b/tiberiandawn/findpath.cpp
+@@ -48,6 +48,7 @@
+  *   Set_Path_Overlap -- Sets the overlap bit for given cell                                   *
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
++#include "amiga_prof.h"
+ #include "function.h"
+ //#include	<string.h>
+ 
+@@ -514,6 +515,7 @@ bool FootClass::Register_Cell(PathType* path, CELL cell, FacingType dir, int cos
+  *=============================================================================================*/
+ PathType* FootClass::Find_Path(CELL dest, FacingType* final_moves, int maxlen, MoveType threshhold)
+ {
++    PROF_SCOPE_N(prof_fn, 50);
+     CELL source = Coord_Cell(Coord); // Source expressed as cell
+     static PathType path;            // Main path control.
+     CELL next;                       // Next cell to enter
+diff --git a/tiberiandawn/foot.cpp b/tiberiandawn/foot.cpp
+index 2c4a157..8d56466 100644
+--- a/tiberiandawn/foot.cpp
++++ b/tiberiandawn/foot.cpp
+@@ -73,6 +73,7 @@
+  *   FootClass::~FootClass -- Default destructor for foot class objects.                       *
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
++#include "amiga_prof.h"
+ #include "function.h"
+ #include "common/irandom.h"
+ 
+@@ -299,6 +300,8 @@ void FootClass::Set_Speed(int speed)
+  *=============================================================================================*/
+ bool FootClass::Mark(MarkType mark)
+ {
++    PROF_COUNT(0);
++    PROF_SCOPE_TOP(prof_top, 89);
+     if (TechnoClass::Mark(mark)) {
+         CELL cell = Coord_Cell(Coord);
+ 
+@@ -349,6 +352,7 @@ bool FootClass::Mark(MarkType mark)
+  *=============================================================================================*/
+ bool FootClass::Basic_Path(void)
+ {
++    PROF_SCOPE_N(prof_fn, 51);
+     PathType* path; // Pointer to path control structure.
+     CELL cell;
+     int skip_path = false;
+@@ -655,6 +659,7 @@ int FootClass::Mission_Guard(void)
+  *=============================================================================================*/
+ int FootClass::Mission_Hunt(void)
+ {
++    PROF_SCOPE_N(prof_fn, 57);
+     if (!Target_Something_Nearby(THREAT_NORMAL)) {
+         Random_Animate();
+     } else {
+@@ -747,6 +752,7 @@ int FootClass::Mission_Timed_Hunt(void)
+  *=============================================================================================*/
+ bool FootClass::Stop_Driver(void)
+ {
++    PROF_SCOPE_N(prof_ai, 88);
+     if (HeadToCoord) {
+         HeadToCoord = 0;
+         Set_Speed(0);
+@@ -868,6 +874,7 @@ void FootClass::Stun(void)
+  *=============================================================================================*/
+ void FootClass::Approach_Target(void)
+ {
++    PROF_SCOPE_N(prof_fn, 61);
+     /*
+     **	Determine that if there is an existing target it is still legal
+     **	and within range.
+@@ -1369,6 +1376,7 @@ void FootClass::Active_Click_With(ActionType action, CELL cell)
+  *=============================================================================================*/
+ void FootClass::Per_Cell_Process(bool center)
+ {
++    PROF_SCOPE_N(prof_fn, 58);
+     //	if (center) {
+ 
+     /*
+@@ -1864,6 +1872,7 @@ void FootClass::Death_Announcement(TechnoClass const* source) const
+  *=============================================================================================*/
+ TARGET FootClass::Greatest_Threat(ThreatType method) const
+ {
++    PROF_SCOPE_N(prof_fn, 53);
+     /*
+     **	If this object can cloak, then it won't select a target automatically.
+     */
+@@ -1981,6 +1990,7 @@ int FootClass::Offload_Tiberium_Bail(void)
+  *=============================================================================================*/
+ MoveType FootClass::Can_Enter_Cell(CELL, FacingType) const
+ {
++    PROF_SCOPE_N(prof_fn, 59);
+     return MOVE_OK;
+ }
+ 
+diff --git a/tiberiandawn/infantry.cpp b/tiberiandawn/infantry.cpp
+index 9b527ac..a7a93ca 100644
+--- a/tiberiandawn/infantry.cpp
++++ b/tiberiandawn/infantry.cpp
+@@ -78,6 +78,7 @@
+  *   InfantryClass::Validate -- validates infantry pointer.												  *
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
++#include "amiga_prof.h"
+ #include "function.h"
+ #include "ccini.h"
+ 
+@@ -1019,6 +1020,7 @@ void InfantryClass::Assign_Target(TARGET target)
+  *=============================================================================================*/
+ void InfantryClass::AI(void)
+ {
++    PROF_SCOPE_N(prof_ai, 85);
+     Validate();
+     FootClass::AI();
+ 
+@@ -1582,6 +1584,7 @@ MoveBitType InfantryClass::Blocking_Object(TechnoClass const* techno, CELL cell)
+  *=============================================================================================*/
+ MoveType InfantryClass::Can_Enter_Cell(CELL cell, FacingType) const
+ {
++    PROF_SCOPE_N(prof_fn, 60);
+     Validate();
+     /*
+     ** If we are moving into an illegal cell, then we can't do that.
+@@ -2514,6 +2517,7 @@ bool InfantryClass::Unlimbo(COORDINATE coord, DirType facing)
+  *=============================================================================================*/
+ TARGET InfantryClass::Greatest_Threat(ThreatType threat) const
+ {
++    PROF_SCOPE_N(prof_fn, 54);
+     Validate();
+     /*
+     **	Engineers consider only buildings that can be captures as being a threat. All others
+diff --git a/tiberiandawn/mission.cpp b/tiberiandawn/mission.cpp
+index 0c2e3f4..e893514 100644
+--- a/tiberiandawn/mission.cpp
++++ b/tiberiandawn/mission.cpp
+@@ -43,6 +43,7 @@
+  *   MissionClass::Set_Mission -- Sets the mission to the specified value.                     *
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
++#include "amiga_prof.h"
+ #include "function.h"
+ 
+ /***********************************************************************************************
+@@ -238,6 +239,7 @@ void MissionClass::Debug_Dump(MonoClass* mono) const
+  *=============================================================================================*/
+ void MissionClass::AI(void)
+ {
++    PROF_SCOPE_N(prof_ai, 84);
+     ObjectClass::AI();
+ 
+     /*
+diff --git a/tiberiandawn/object.cpp b/tiberiandawn/object.cpp
+index 72ed3e5..71fabaa 100644
+--- a/tiberiandawn/object.cpp
++++ b/tiberiandawn/object.cpp
+@@ -75,6 +75,7 @@
+  *   ObjectClass::Target_Coord -- Fetches the coordinate if this object is a target.           *
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
++#include "amiga_prof.h"
+ #include "function.h"
+ 
+ /*
+@@ -1482,6 +1483,8 @@ ResultType ObjectClass::Take_Damage(int& damage, int distance, WarheadType warhe
+  *=============================================================================================*/
+ bool ObjectClass::Mark(MarkType mark)
+ {
++    PROF_COUNT(1);
++    PROF_SCOPE_TOP(prof_top, 90);
+     TechnoClass* tech;
+     CELL cell;
+     int threat;
+diff --git a/tiberiandawn/tarcom.cpp b/tiberiandawn/tarcom.cpp
+index eba09a6..9f03888 100644
+--- a/tiberiandawn/tarcom.cpp
++++ b/tiberiandawn/tarcom.cpp
+@@ -35,6 +35,7 @@
+  *   TarComClass::~TarComClass -- Destructor for turret object.                                *
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
++#include "amiga_prof.h"
+ #include "function.h"
+ 
+ /***********************************************************************************************
+@@ -92,6 +93,7 @@ void TarComClass::Debug_Dump(MonoClass* mono) const
+  *=============================================================================================*/
+ void TarComClass::AI(void)
+ {
++    PROF_SCOPE_N(prof_ai, 82);
+     TurretClass::AI();
+ 
+     if (Class->Primary != WEAPON_NONE) {
+diff --git a/tiberiandawn/techno.cpp b/tiberiandawn/techno.cpp
+index 07b96eb..9dd7ebe 100644
+--- a/tiberiandawn/techno.cpp
++++ b/tiberiandawn/techno.cpp
+@@ -111,6 +111,7 @@
+  *   TechnoClass::Refund_Amount -- Returns with the money to refund if this object is sold.    *
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
++#include "amiga_prof.h"
+ #include "function.h"
+ 
+ /***************************************************************************
+@@ -1325,6 +1326,7 @@ bool TechnoClass::In_Range(COORDINATE coord, int which) const
+  *=============================================================================================*/
+ bool TechnoClass::Evaluate_Object(ThreatType method, int mask, int range, TechnoClass const* object, int& value) const
+ {
++    PROF_SCOPE_N(prof_fn, 55);
+     /*
+     **	An object in limbo can never be a valid target.
+     */
+@@ -1600,6 +1602,7 @@ bool TechnoClass::Evaluate_Cell(ThreatType method,
+  *=============================================================================================*/
+ TARGET TechnoClass::Greatest_Threat(ThreatType method) const
+ {
++    PROF_SCOPE_N(prof_fn, 52);
+     ObjectClass const* bestobject = NULL;
+     int bestval = -1;
+ 
+@@ -1901,6 +1904,7 @@ void TechnoClass::Clicked_As_Target(HousesType house,
+  *=============================================================================================*/
+ void TechnoClass::AI(void)
+ {
++    PROF_SCOPE_N(prof_ai, 83);
+     CargoClass::AI();
+     RadioClass::AI();
+     DoorClass::AI();
+@@ -4272,6 +4276,7 @@ void TechnoClass::Response_Sabotage(void)
+  *=============================================================================================*/
+ bool TechnoClass::Target_Something_Nearby(ThreatType threat)
+ {
++    PROF_SCOPE_N(prof_fn, 56);
+     threat = threat & (THREAT_RANGE | THREAT_AREA);
+ 
+     /*
+diff --git a/tiberiandawn/turret.cpp b/tiberiandawn/turret.cpp
+index 936351e..8485f61 100644
+--- a/tiberiandawn/turret.cpp
++++ b/tiberiandawn/turret.cpp
+@@ -43,6 +43,7 @@
+  *   TurretClass::~TurretClass -- Default destructor for turret class objects.                 *
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
++#include "amiga_prof.h"
+ #include "function.h"
+ #include "turret.h"
+ 
+@@ -182,6 +183,7 @@ bool TurretClass::Ok_To_Move(DirType dir)
+  *=============================================================================================*/
+ void TurretClass::AI(void)
+ {
++    PROF_SCOPE_N(prof_ai, 81);
+     DriveClass::AI();
+ 
+     /*
+-- 
+2.45.2.windows.1
+
