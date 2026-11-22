@@ -147,7 +147,7 @@ Oryginalny kod pisano na x86 (little-endian), a 68060 jest big-endian. Pliki dan
 | Faza | Zakres | Kryterium ukończenia |
 |---|---|---|
 | **F0: środowisko** | Toolchain (bebbo amiga-gcc z C++, NDK 3.2, SDK P96, AHI), Vanilla Conquer na hoście z danymi freeware, Warp z firmware 3.0, **WarpStressTest przy docelowym zegarze** | Vanilla Conquer działa na PC; pusty program 68k otwiera ekran P96 na Warpie; zegar stabilny |
-| **F1: kontakt i pomiar** | Rozmowa z arczim i Bowringiem, test ich portów na Warpie, RTGBench, wariant SDL2 jako punkt odniesienia | Decyzja: na czym budujemy + tabela pomiarów |
+| **F1: kontakt i pomiar** | Rozmowa z arczim i Bowringiem, test ich portów na Warpie, RTGBench, wariant SDL2 jako punkt odniesienia | Decyzja: na czym budujemy + tabela pomiarów. **Wstępna decyzja (22.11.2026, użytkownik): własny backend natywny (`video_amiga.cpp`, klawiatura, AHI), bez mini-SDL2** – priorytetem jest szybkość kodu; SDL2 tylko jako punkt odniesienia |
 | **F2: kompilacja i endianness** | Build 68k, audyt i poprawki endianness, testy zasobów bajt w bajt | Menu i mapa TD wyświetlają się poprawnie |
 | **F3: backend Warp/P96** | Bufor w Fast RAM, `CopyRows16` z fallbackiem, sprzętowy kursor, `warp.audio`, input, timer E-Clock | Pełna misja TD do przejścia; brak RMW na VRAM |
 | **F4: optymalizacja 060** | Profil, flagi, dirty rectangles z systemu komórek mapy, układ danych pod L2, asembler w blitach, preload MIX | Docelowy fps (sekcja 8) w 640×400 |
@@ -156,6 +156,10 @@ Oryginalny kod pisano na x86 (little-endian), a 68060 jest big-endian. Pliki dan
 | **F7: sieć (opcjonalnie)** | UDP przez `bsdsocket.library` na `warpNET.device` | Gra 2 Amig z Warpem przez WiFi |
 | **F8: testy** | Warp1260, 1260X, 7060, 560; dla porównania jedna karta Zorro | Lista znanych problemów, poprawki krytyczne |
 | **F9: wydanie** | Paczka **ZIP** (nie LHA, `tools/make_zip.py` z uprawnieniami Unix), README (firmware 3.0, P96, ustawienia AHI, skąd dane freeware), źródła publicznie. **WARP HUB:** układ `releases/amiga/<Gra>-<v>.zip` + rozpakowana szuflada `<Gra>/` + `<Gra>.info` (ikona szuflady WARP), `releases/** -text` w `.gitattributes`, `$VER` zgodny z nazwą ZIP-a, `doc/<Gra>_release*.txt` i `doc/Install.txt`, puste szuflady na dane z `ReadMe.txt`, sprawdzenie `check_release.py`, wpis w katalogu WARP HUB (zasady w `PORTING_PLAN.md`, „Wydanie dla WARP HUB”) | Wydanie zgodne z GPLv3, bez danych gry; WARP HUB instaluje je i pokazuje wersję |
+
+## 7a. Decyzje
+
+- **22.11.2026, backend:** własny backend natywny AmigaOS zamiast mini-SDL2. Powód: priorytetem jest szybkość kodu, a zasady Warpa (bufor w Fast RAM, `MOVE16` do VRAM, sprzętowy kursor, `BltBitMap` w obrębie ekranu, dirty rectangles) wymagają pełnej kontroli nad ścieżką klatki. Punkt styku jest wąski: `common/video.h` (backendy `video_sdl2`, `video_sdl1`, `video_ddraw`, `video_null`), `wwkeyboard_*`, `audio.h`/`soundio_openal.cpp`. Kolejność: F2 na `video_null`, F3 `video_amiga.cpp`. Ryzyko: miejsca w kodzie gry używające SDL wprost (m.in. `options.cpp`, `startup.cpp`), do policzenia w F2.
 
 ## 8. Metryki docelowe (do potwierdzenia w F1)
 
