@@ -1,0 +1,186 @@
+From 6b128453dd32c8015a072cba28cff824688bf47a Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Mon, 23 Nov 2026 00:58:54 +0100
+Subject: [PATCH 16/16] Amiga: Tool Types (SOUND=), movies skipped by default,
+ version tag, keyframe fix
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ common/CMakeLists.txt      |  2 +-
+ common/amiga_stack.cpp     |  2 +-
+ common/amiga_tooltypes.cpp | 90 ++++++++++++++++++++++++++++++++++++++
+ common/soundio_amiga.cpp   |  8 ++++
+ common/video_amiga.cpp     |  5 ++-
+ tiberiandawn/startup.cpp   |  1 +
+ 6 files changed, 104 insertions(+), 4 deletions(-)
+ create mode 100644 common/amiga_tooltypes.cpp
+
+diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
+index b41058b..d320845 100644
+--- a/common/CMakeLists.txt
++++ b/common/CMakeLists.txt
+@@ -145,7 +145,7 @@ else()
+ endif()
+ 
+ if(AMIGA)
+-    list(APPEND COMMONV_SRC video_amiga.cpp wwkeyboard_amiga.cpp amiga_watchdog.cpp amiga_stack.cpp)
++    list(APPEND COMMONV_SRC video_amiga.cpp wwkeyboard_amiga.cpp amiga_watchdog.cpp amiga_stack.cpp amiga_tooltypes.cpp)
+ elseif(DDRAW)
+     list(APPEND COMMONV_SRC video_ddraw.cpp wwkeyboard_win32.cpp)
+     list(APPEND VANILLA_LIBS ddraw)
+diff --git a/common/amiga_stack.cpp b/common/amiga_stack.cpp
+index d71d026..95328e9 100644
+--- a/common/amiga_stack.cpp
++++ b/common/amiga_stack.cpp
+@@ -9,4 +9,4 @@ void (*const amiga_stack_swap)(void) = __stkinit;
+ 
+ #define CNC_PORT_VERSION "0.1"
+ // Shell `Version` command; the release number is bumped for every build given to users.
+-extern "C" const char amiga_version_tag[] = "$VER: CnC-TD " CNC_PORT_VERSION " (22.11.2026)";
++extern "C" const char amiga_version_tag[] = "$VER: CommandConquer " CNC_PORT_VERSION " (23.11.2026)";
+diff --git a/common/amiga_tooltypes.cpp b/common/amiga_tooltypes.cpp
+new file mode 100644
+index 0000000..106664f
+--- /dev/null
++++ b/common/amiga_tooltypes.cpp
+@@ -0,0 +1,90 @@
++// Tool Types of the program icon (Workbench or Shell start). Read once, in the main task, before main():
++// the sound process has no program name of its own. Keys are case-insensitive; the value is returned as is.
++#include <cstring>
++#include <exec/types.h>
++#include <dos/dos.h>
++#include <workbench/workbench.h>
++#include <proto/exec.h>
++#include <proto/dos.h>
++#include <proto/icon.h>
++#include <workbench/startup.h>
++
++extern struct WBStartup* _WBenchMsg; // libnix: set when started from Workbench
++
++struct Library* IconBase = nullptr;
++
++namespace
++{
++struct Loader
++{
++    char Keys[8][16];
++    char Values[8][32];
++    int Count;
++    Loader() : Count(0) {}
++    void Load()
++    {
++        char name[128];
++        if (_WBenchMsg && _WBenchMsg->sm_NumArgs > 0 && _WBenchMsg->sm_ArgList[0].wa_Name) {
++            std::strncpy(name, (const char*)_WBenchMsg->sm_ArgList[0].wa_Name, sizeof(name) - 1);
++            name[sizeof(name) - 1] = 0;
++        } else if (!GetProgramName((STRPTR)name, sizeof(name))) {
++            return;
++        }
++        const char* base = name;
++        for (const char* p = name; *p; p++) {
++            if (*p == '/' || *p == ':') {
++                base = p + 1;
++            }
++        }
++        char path[160];
++        std::strcpy(path, "PROGDIR:");
++        std::strncat(path, base, 120);
++        IconBase = OpenLibrary((CONST_STRPTR)"icon.library", 0);
++        if (!IconBase) {
++            return;
++        }
++        struct DiskObject* dobj = GetDiskObject((CONST_STRPTR)path);
++        if (dobj && dobj->do_ToolTypes) {
++            for (char** tt = (char**)dobj->do_ToolTypes; *tt && Count < 8; tt++) {
++                const char* s = *tt;
++                if (s[0] == '(' || !std::strchr(s, '=')) {
++                    continue; // "(SOUND=AHI)": switched off, only a hint
++                }
++                int k = 0;
++                while (*s && *s != '=' && k < 15) {
++                    char c = *s++;
++                    Keys[Count][k++] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
++                }
++                Keys[Count][k] = 0;
++                while (*s && *s != '=') {
++                    s++;
++                }
++                if (*s == '=') {
++                    s++;
++                }
++                std::strncpy(Values[Count], s, 31);
++                Values[Count][31] = 0;
++                Count++;
++            }
++        }
++        (void)dobj; // kept for the lifetime of the program
++    }
++};
++
++Loader TheLoader;
++} // namespace
++
++void Amiga_Load_ToolTypes()
++{
++    TheLoader.Load();
++}
++
++const char* Amiga_ToolType(const char* key)
++{
++    for (int i = 0; i < TheLoader.Count; i++) {
++        if (!std::strcmp(TheLoader.Keys[i], key)) {
++            return TheLoader.Values[i];
++        }
++    }
++    return nullptr;
++}
+diff --git a/common/soundio_amiga.cpp b/common/soundio_amiga.cpp
+index c12fccc..3906883 100644
+--- a/common/soundio_amiga.cpp
++++ b/common/soundio_amiga.cpp
+@@ -511,6 +511,14 @@ static const char* Read_Mode_File()
+         }
+         std::fclose(f);
+     }
++    if (!word[0]) {
++        extern const char* Amiga_ToolType(const char*);
++        const char* t = Amiga_ToolType("SOUND");
++        for (int i = 0; t && t[i] && i < 15; i++) {
++            word[i] = (t[i] >= 'A' && t[i] <= 'Z') ? (char)(t[i] + 32) : t[i];
++            word[i + 1] = 0;
++        }
++    }
+     return word;
+ }
+ 
+diff --git a/common/video_amiga.cpp b/common/video_amiga.cpp
+index 4895458..e218013 100644
+--- a/common/video_amiga.cpp
++++ b/common/video_amiga.cpp
+@@ -601,8 +601,9 @@ bool Amiga_No_Movies()
+ {
+     static int cached = -1;
+     if (cached < 0) {
+-        FILE* f = std::fopen("PROGDIR:nomovies", "r");
+-        cached = f ? 1 : 0;
++        // no FMV player yet: movies are skipped unless the file PROGDIR:movies exists
++        FILE* f = std::fopen("PROGDIR:movies", "r");
++        cached = f ? 0 : 1;
+         if (f) {
+             std::fclose(f);
+         }
+diff --git a/tiberiandawn/startup.cpp b/tiberiandawn/startup.cpp
+index 342bb74..e24a615 100644
+--- a/tiberiandawn/startup.cpp
++++ b/tiberiandawn/startup.cpp
+@@ -205,6 +205,7 @@ extern "C" unsigned long __stack;
+ int main(int argc, char** argv)
+ {
+ #ifdef __amigaos__
++    { extern void Amiga_Load_ToolTypes(); Amiga_Load_ToolTypes(); }
+     { FILE* lf = fopen("RAM:cnc-log.txt", "w"); if (lf) { fprintf(lf, "main=%p\n", (void*)&main); fprintf(lf, "%s stack %lu\n", amiga_version_tag, __stack); fclose(lf); } } Debug_String_File("RAM:cnc-debug.txt"); { extern void Amiga_Start_Watchdog(); Amiga_Start_Watchdog(); }
+ #endif
+     UtfArgs args(argc, argv);
+-- 
+2.45.2.windows.1
+

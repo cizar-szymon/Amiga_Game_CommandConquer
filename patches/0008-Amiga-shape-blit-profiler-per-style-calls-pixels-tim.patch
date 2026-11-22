@@ -1,7 +1,7 @@
 From 24072a0d3fa546e46b04fcea29711d3c5e2cb798 Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Sun, 22 Nov 2026 21:09:12 +0100
-Subject: [PATCH 08/15] Amiga: shape blit profiler (per style
+Subject: [PATCH 08/16] Amiga: shape blit profiler (per style
  calls/pixels/time)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
