@@ -1,0 +1,41 @@
+COMMAND & CONQUER: TIBERIAN DAWN for the Amiga (Warp cards)         release 0.1
+==========================================================================
+
+Port of the GPL engine "Vanilla Conquer" (the open-source Tiberian Dawn
+by Electronic Arts) to AmigaOS 3.x with its own native back end.
+
+HARDWARE
+  Made for Amiga 500 / 1200 / 3000 / 4000 with a Warp card (Warp 560, 1240,
+  1260, 1260 Extreme, 7060), ported and tested on such cards: it reaches
+  its speed through the fast graphics (RTG) of the Warp. Other Amigas with a
+  68040/68060 and Picasso96 RTG run it, but slower.
+  Tested on: A1200 + Warp 1260 Extreme (68060, 100 MHz), AmigaOS 3.2.2.1.
+
+REQUIREMENTS
+  AmigaOS 3.2, Picasso96, 68060.library (or 040), AHI for sound (on a Warp
+  card AHI plays through HDMI), the game data (see data/ReadMe.txt).
+
+INSTALLATION
+  UnZip CommandConquer-0.1.zip -d Work:Games
+  Put the *.MIX files of Command & Conquer (Gold) into CommandConquer/data
+  (the freeware data from Electronic Arts, NOT included).
+  Start CommandConquer from its icon or from a Shell.
+
+SOUND (Tool Types of the icon, remove the brackets to switch on)
+  SOUND=AHI    sound through AHI (default on a Warp card)
+  SOUND=PAULA  sound through the Amiga's own audio chip
+  SOUND=OFF    no sound
+
+THE GAME
+  640x400 screen with 256 colours, played with the mouse as on the PC.
+  The sidebar is opened by the "Sidebar" tab at the top right.
+  Saved games and settings: the drawer "user" in the game's drawer.
+  The game movies are skipped for now.
+  Ctrl-C closes the game.
+
+BUG REPORTS
+  Please state the release number (Shell: Version CommandConquer) and the
+  Amiga/card you use. Files RAM:cnc-log.txt and RAM:cnc-sound-log.txt help.
+
+LICENCE
+  GNU GPL v3 (doc/COPYING). The game data belongs to Electronic Arts.
