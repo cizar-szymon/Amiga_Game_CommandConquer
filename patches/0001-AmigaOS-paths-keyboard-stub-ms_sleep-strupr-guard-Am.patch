@@ -1,0 +1,345 @@
+From b2e52b3aafda930cfbae177f4d1ab2aad117180d Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Sun, 22 Nov 2026 14:18:24 +0100
+Subject: [PATCH] AmigaOS: paths, keyboard stub, ms_sleep, strupr guard, Amiga
+ debug log
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ common/CMakeLists.txt       |   8 ++-
+ common/ccfile.cpp           |   2 +
+ common/debugstring.cpp      |  27 ++++++++++
+ common/mssleep.h            |   9 ++++
+ common/paths.cpp            |   4 ++
+ common/paths_amiga.cpp      | 102 ++++++++++++++++++++++++++++++++++++
+ common/wwkeyboard_amiga.cpp |  28 ++++++++++
+ common/wwstd.h              |   3 ++
+ tiberiandawn/startup.cpp    |   3 ++
+ 9 files changed, 184 insertions(+), 2 deletions(-)
+ create mode 100644 common/paths_amiga.cpp
+ create mode 100644 common/wwkeyboard_amiga.cpp
+
+diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
+index eada872..ccf129a 100644
+--- a/common/CMakeLists.txt
++++ b/common/CMakeLists.txt
+@@ -99,7 +99,9 @@ set(COMMON_SRC
+     xstraw.cpp
+ )
+ 
+-if (WIN32)
++if (AMIGA)
++    list(APPEND COMMON_SRC file_posix.cpp paths_amiga.cpp)
++elseif (WIN32)
+     list(APPEND COMMON_SRC file_win.cpp paths_win.cpp)
+ else()
+     list(APPEND COMMON_SRC file_posix.cpp paths_posix.cpp)
+@@ -140,7 +142,9 @@ else()
+     list(APPEND COMMONV_SRC soundio_null.cpp vqaaudio_null.cpp)
+ endif()
+ 
+-if(DDRAW)
++if(AMIGA)
++    list(APPEND COMMONV_SRC video_null.cpp wwkeyboard_amiga.cpp)
++elseif(DDRAW)
+     list(APPEND COMMONV_SRC video_ddraw.cpp wwkeyboard_win32.cpp)
+     list(APPEND VANILLA_LIBS ddraw)
+ elseif(SDL2)
+diff --git a/common/ccfile.cpp b/common/ccfile.cpp
+index a700759..c3c783d 100644
+--- a/common/ccfile.cpp
++++ b/common/ccfile.cpp
+@@ -42,6 +42,7 @@
+  *   CCFileClass::Size -- Determines the size of the file.                                     *
+  *   CCFileClass::Write -- Writes data to the file (non mixfile files only).                   *
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
++#include "debugstring.h"
+ #include <errno.h>
+ #include "ccfile.h"
+ 
+@@ -111,6 +112,7 @@ CCFileClass::CCFileClass(void)
+  *=============================================================================================*/
+ void CCFileClass::Error(int error, int canretry, char const* filename)
+ {
++    DBG_ERROR("CCFileClass::Error %d retry %d file %s", error, canretry, filename ? filename : "(none)");
+     if (!Force_CD_Available(RequiredCD)) {
+         Prog_End("CCFileClass::Error CD not found", true);
+         if (!RunningAsDLL) { // PG
+diff --git a/common/debugstring.cpp b/common/debugstring.cpp
+index 2244eee..73f6b94 100644
+--- a/common/debugstring.cpp
++++ b/common/debugstring.cpp
+@@ -9,6 +9,9 @@
+ #include <io.h>
+ #endif
+ 
++#ifdef __amigaos__
++static char AmigaLogName[128];
++#endif
+ static class DebugStateClass
+ {
+ public:
+@@ -55,6 +58,20 @@ void Debug_String_Log(unsigned level, const char* file, int line, const char* fm
+     static const char* levels[] = {"NONE", "FATAL", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"};
+     assert(level <= 6);
+ 
++#ifdef __amigaos__
++    if (AmigaLogName[0] != '\0') {
++        FILE* lf = fopen(AmigaLogName, "a");
++        if (lf != nullptr) {
++            va_list largs;
++            fprintf(lf, "%-5s %s:%d: ", levels[level], file, line);
++            va_start(largs, fmt);
++            vfprintf(lf, fmt, largs);
++            va_end(largs);
++            fprintf(lf, "\n");
++            fclose(lf);
++        }
++    }
++#endif
+     /* If we have a file pointer set we are logging to a file */
+     if (DebugState.File != nullptr) {
+         va_list args;
+@@ -82,5 +99,15 @@ void Debug_String_File(const char* file)
+         fclose(DebugState.File);
+     }
+ 
++#ifdef __amigaos__
++    /* Keep the file closed between messages so it can be read while the game runs. */
++    strncpy(AmigaLogName, file, sizeof(AmigaLogName) - 1);
+     DebugState.File = fopen(file, "w");
++    if (DebugState.File != nullptr) {
++        fclose(DebugState.File);
++        DebugState.File = nullptr;
++    }
++#else
++    DebugState.File = fopen(file, "w");
++#endif
+ }
+diff --git a/common/mssleep.h b/common/mssleep.h
+index eb1f8eb..dff04e2 100644
+--- a/common/mssleep.h
++++ b/common/mssleep.h
+@@ -10,6 +10,9 @@
+ #include <winbase.h>
+ #elif defined(_WIN32)
+ #include <synchapi.h>
++#elif defined(__amigaos__)
++#include <proto/dos.h>
++#include <proto/exec.h>
+ #else /* Assuming recent posix*/
+ #ifndef __USE_POSIX199309
+ #define __USE_POSIX199309 1
+@@ -27,6 +30,9 @@ static inline void us_sleep(unsigned us)
+ {
+ #ifdef _WIN32
+     Sleep((us + 999) / 1000);
++#elif defined(__amigaos__)
++    /* TODO F3: timer.device microsecond wait; Delay() granularity is 20 ms. */
++    if (us >= 20000) Delay(us / 20000); else Delay(0);
+ #else
+     struct timespec ts;
+     ts.tv_sec = us / 1000000;
+@@ -42,6 +48,9 @@ static inline void ms_sleep(unsigned ms)
+ {
+ #ifdef _WIN32
+     Sleep(ms);
++#elif defined(__amigaos__)
++    /* TODO F3: timer.device microsecond wait; Delay() granularity is 20 ms. */
++    if (ms >= 20) Delay(ms / 20); else Delay(0);
+ #else
+     struct timespec ts;
+     ts.tv_sec = ms / 1000;
+diff --git a/common/paths.cpp b/common/paths.cpp
+index a07639e..0af5059 100644
+--- a/common/paths.cpp
++++ b/common/paths.cpp
+@@ -108,4 +108,8 @@ void PathsClass::Init(const char* suffix, const char* ini_name, const char* data
+ 
+     DBG_INFO("Read only data directory is set to '%s'", DataPath.c_str());
+     DBG_INFO("Read/Write user data directory is set to '%s'", UserPath.c_str());
++#ifdef __amigaos__
++    /* UserPath may have been changed by the ini file after User_Path() created the default one. */
++    Create_Directory(UserPath.c_str());
++#endif
+ }
+diff --git a/common/paths_amiga.cpp b/common/paths_amiga.cpp
+new file mode 100644
+index 0000000..3289cf1
+--- /dev/null
++++ b/common/paths_amiga.cpp
+@@ -0,0 +1,102 @@
++// AmigaOS paths for Vanilla Conquer (port for AmigaOS 3.x, Warp RTG).
++// Everything is relative to the program drawer (PROGDIR:), no POSIX home or /proc.
++#include "paths.h"
++#include "debugstring.h"
++#include <cstring>
++#include <string>
++#include <proto/dos.h>
++#include <dos/dos.h>
++
++const char* PathsClass::Program_Path()
++{
++    if (ProgramPath.empty()) {
++        ProgramPath = "PROGDIR:";
++    }
++    return ProgramPath.c_str();
++}
++
++const char* PathsClass::Data_Path()
++{
++    if (DataPath.empty()) {
++        DataPath = "PROGDIR:data";
++        if (!Suffix.empty()) {
++            DataPath += SEP + Suffix;
++        }
++    }
++    return DataPath.c_str();
++}
++
++const char* PathsClass::User_Path()
++{
++    if (UserPath.empty()) {
++        UserPath = "PROGDIR:user";
++        if (!Suffix.empty()) {
++            UserPath += SEP + Suffix;
++        }
++        Create_Directory(UserPath.c_str());
++    }
++    return UserPath.c_str();
++}
++
++bool PathsClass::Create_Directory(const char* dirname)
++{
++    if (dirname == nullptr) {
++        return true;
++    }
++    std::string temp = dirname;
++    size_t pos = temp.find(':');
++    pos = (pos == std::string::npos) ? 0 : pos + 1;
++    bool ret = true;
++    for (;;) {
++        pos = temp.find('/', pos);
++        std::string part = temp.substr(0, pos);
++        if (!part.empty() && part[part.size() - 1] != ':') {
++            BPTR lock = Lock((CONST_STRPTR)part.c_str(), SHARED_LOCK);
++            if (lock) {
++                UnLock(lock);
++            } else {
++                BPTR nl = CreateDir((CONST_STRPTR)part.c_str());
++                if (nl) {
++                    UnLock(nl);
++                } else {
++                    ret = false;
++                    break;
++                }
++            }
++        }
++        if (pos == std::string::npos) {
++            break;
++        }
++        ++pos;
++    }
++    return ret;
++}
++
++bool PathsClass::Is_Absolute(const char* path)
++{
++    return path != nullptr && std::strchr(path, ':') != nullptr;
++}
++
++std::string PathsClass::Concatenate_Paths(const char* path1, const char* path2)
++{
++    std::string r(path1);
++    if (!r.empty() && r[r.size() - 1] != ':' && r[r.size() - 1] != '/') {
++        r += SEP;
++    }
++    return r + path2;
++}
++
++std::string PathsClass::Get_Filename(const char* path)
++{
++    const char* p = path + std::strlen(path);
++    while (p > path && p[-1] != '/' && p[-1] != ':') {
++        --p;
++    }
++    return std::string(p);
++}
++
++std::string PathsClass::Argv_Path(const char* cmd_arg)
++{
++    (void)cmd_arg;
++    return std::string("PROGDIR:");
++}
+diff --git a/common/wwkeyboard_amiga.cpp b/common/wwkeyboard_amiga.cpp
+new file mode 100644
+index 0000000..25a983d
+--- /dev/null
++++ b/common/wwkeyboard_amiga.cpp
+@@ -0,0 +1,28 @@
++// AmigaOS keyboard/mouse backend for Vanilla Conquer.
++// F2 stub: links and does nothing. F3 fills Fill_Buffer_From_System from the
++// Intuition window IDCMP (RAWKEY, mouse) and maps Amiga raw codes to VK_*.
++#include "macros.h"
++#include "wwkeyboard.h"
++#include "video.h"
++#include "settings.h"
++
++class WWKeyboardClassAmiga : public WWKeyboardClass
++{
++public:
++    virtual ~WWKeyboardClassAmiga()
++    {
++    }
++    virtual void Fill_Buffer_From_System(void)
++    {
++    }
++    virtual KeyASCIIType To_ASCII(unsigned short key)
++    {
++        (void)key;
++        return KA_NONE;
++    }
++};
++
++WWKeyboardClass* CreateWWKeyboardClass(void)
++{
++    return new WWKeyboardClassAmiga;
++}
+diff --git a/common/wwstd.h b/common/wwstd.h
+index 5e41f06..ebba291 100644
+--- a/common/wwstd.h
++++ b/common/wwstd.h
+@@ -260,6 +260,7 @@ inline static void _splitpath(const char* path, char* drive, char* dir, char* fn
+     }
+ }
+ 
++#ifndef __amigaos__
+ inline static char* strupr(char* str)
+ {
+     char* ret = str;
+@@ -270,6 +271,8 @@ inline static char* strupr(char* str)
+     return ret;
+ }
+ 
++#endif // __amigaos__
++
+ inline static void strrev(char* str)
+ {
+     int len = strlen(str);
+diff --git a/tiberiandawn/startup.cpp b/tiberiandawn/startup.cpp
+index 8536cc9..a176066 100644
+--- a/tiberiandawn/startup.cpp
++++ b/tiberiandawn/startup.cpp
+@@ -200,6 +200,9 @@ int DLL_Startup(const char* command_line_in)
+ 
+ int main(int argc, char** argv)
+ {
++#ifdef __amigaos__
++    { FILE* lf = fopen("RAM:cnc-log.txt", "w"); if (lf) { fprintf(lf, "main=%p\n", (void*)&main); fclose(lf); } } Debug_String_File("RAM:cnc-debug.txt");
++#endif
+     UtfArgs args(argc, argv);
+     CCDebugString("C&C95 - Starting up.\n");
+ 
+-- 
+2.45.2.windows.1
+

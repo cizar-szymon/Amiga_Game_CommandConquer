@@ -1,0 +1,13 @@
+# CMake toolchain: bebbo m68k-amigaos gcc 6.5.0b (libnix), 68060 + FPU.
+set(CMAKE_SYSTEM_NAME Generic)
+set(CMAKE_SYSTEM_PROCESSOR m68k)
+set(CMAKE_C_COMPILER   m68k-amigaos-gcc)
+set(CMAKE_CXX_COMPILER m68k-amigaos-g++)
+set(CMAKE_AR           m68k-amigaos-ar CACHE FILEPATH "")
+set(CMAKE_RANLIB       m68k-amigaos-ranlib CACHE FILEPATH "")
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+set(AMIGA_FLAGS "-mcpu=68060 -mhard-float -noixemul -O2 -fomit-frame-pointer")
+set(CMAKE_C_FLAGS_INIT   "${AMIGA_FLAGS}")
+set(CMAKE_CXX_FLAGS_INIT "${AMIGA_FLAGS} -std=gnu++11")
+set(CMAKE_EXE_LINKER_FLAGS_INIT "-noixemul")
+set(AMIGA TRUE)
