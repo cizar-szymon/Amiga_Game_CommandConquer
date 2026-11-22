@@ -114,3 +114,16 @@ Heaviest moment (us per frame, mainloop 45 000-49 000):
 | present (MOVE16) | 5 300 |
 
 Targets for F4 in this order: shape drawing in the ground layer (~140 us per object), unit/infantry AI (path finding and target search, ~200 us per unit), icon and shroud drawing.
+
+## Shape blitters: what the 68060 on the Warp does (22.11.2026, Amiga 1; `tools/shapebench.c`, in-game `SHAPES` log line)
+
+In the battle scene 11.9 ms of the 13.6 ms ground layer are three loops of `keybuff.cpp` (`BF_Ghost_Fading_Trans` style 7: ~100 calls, 140 kpixels, 8.5 ms; `BF_Ghost_Trans` style 3: 2.7 ms; `BF_Trans` style 1: 0.5 ms), 60-100 ns per pixel.
+
+Machine facts measured with the benchmark (CPU 100 MHz, subq+bne loop = 10.2 ns, CACR 0x80001111: caches and copyback on, no write allocate; `CacheControl(CACRF_WriteAllocate)` is accepted but changes nothing):
+- a **byte store costs ~55 ns, also into a hot cache line**; a long store 12-24 ns; `movem.l` of 4 registers 64 ns (4 ns per byte). The cost is per store instruction, so writing fewer, wider words is what pays off.
+- libnix `memcpy` is a function call even for 4 bytes (it made a first "optimised" version slower). Copying a 24x24 terrain icon takes 4.3 us (7 us with an unaligned destination) with `memcpy`, six long moves or `movem.l` alike.
+- compiler flags (`-O3`, `-funroll-loops`) made the loops slower.
+
+Variants tried on a 36x36 sprite (ns per pixel, 25 / 60 / 95 % opaque): original 96 / 150 / 163; fade table folded into a 256 entry table 86 / 119 / 121; hand written 68k loop 90 / 115 / 112; four pixels per long read-modify-write in C 126 / 195 / 213 (the shifts cost more than the saved stores). **In the game none of them helped** (style 7: 8.5 ms original, 9.4 ms with the folded-table version): in the real frame the destination lines and the sprite data are cold and the loop is bound by memory, not by instructions. Reverted, nothing of it is in the port.
+
+Conclusion: the shape drawing will only get faster by drawing fewer pixels or by wide stores (compose a row in registers, one long or `MOVE16` write), not by tighter byte loops. Next target: `UnitClass::AI` / `InfantryClass::AI` (14-17 ms in the battle).

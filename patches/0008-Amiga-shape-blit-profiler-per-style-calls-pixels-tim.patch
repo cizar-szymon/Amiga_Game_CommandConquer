@@ -1,0 +1,101 @@
+From 24072a0d3fa546e46b04fcea29711d3c5e2cb798 Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Sun, 22 Nov 2026 21:09:12 +0100
+Subject: [PATCH 8/8] Amiga: shape blit profiler (per style calls/pixels/time)
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ common/amiga_prof.h    |  5 ++++-
+ common/keybuff.cpp     |  6 ++++++
+ common/video_amiga.cpp | 21 +++++++++++++++++++--
+ 3 files changed, 29 insertions(+), 3 deletions(-)
+
+diff --git a/common/amiga_prof.h b/common/amiga_prof.h
+index 712c301..2220e9f 100644
+--- a/common/amiga_prof.h
++++ b/common/amiga_prof.h
+@@ -5,7 +5,9 @@
+ 
+ #ifdef __amigaos__
+ extern unsigned long long Amiga_Prof_Now();
+-extern unsigned long long Amiga_Prof_Acc[64];
++extern unsigned long long Amiga_Prof_Acc[96];
++extern unsigned long Amiga_Prof_Calls[16];
++extern unsigned long Amiga_Prof_Pixels[16];
+ 
+ struct AmigaProfScope
+ {
+@@ -49,6 +51,7 @@ struct AmigaProfScope
+ #define PROF_ICONS 16
+ #define PROF_SHADOW 17
+ #define PROF_LAYER 18 /* + layer, 18..21 */
++#define PROF_SHAPE 50 /* + blit style 0..15 -> 50..65 does not fit: see PROF_SHAPE_N */
+ #define PROF_AI_BASE 24 /* + RTTI type, 24..49 */
+ 
+ #endif
+diff --git a/common/keybuff.cpp b/common/keybuff.cpp
+index 1f9575d..a552e73 100644
+--- a/common/keybuff.cpp
++++ b/common/keybuff.cpp
+@@ -9,6 +9,7 @@
+ // distributed with this program. You should have received a copy of the
+ // GNU General Public License along with permitted additional restrictions
+ // with this program. If not, see https://github.com/electronicarts/CnC_Remastered_Collection
++#include "amiga_prof.h"
+ #include "debugstring.h"
+ #include "graphicsviewport.h"
+ #include "keyframe.h"
+@@ -1424,6 +1425,11 @@ void Buffer_Frame_To_Page(int x,
+     // Here we just use the function that will blit the entire frame
+     // using the appropriate effects.
+     if (blit_height > 0 && blit_width > 0) {
++#ifdef __amigaos__
++        PROF_SCOPE_N(shape_scope, 64 + (blit_style & 0xF));
++        Amiga_Prof_Calls[blit_style & 0xF]++;
++        Amiga_Prof_Pixels[blit_style & 0xF] += (unsigned long)(blit_width * blit_height);
++#endif
+         OldShapeJumpTable[blit_style & 0xF](
+             blit_width, blit_height, dst, src, dst_pitch, src_pitch, ghost_lookup, ghost_table, fade_table, fade_count);
+     }
+diff --git a/common/video_amiga.cpp b/common/video_amiga.cpp
+index 63b3799..d17041a 100644
+--- a/common/video_amiga.cpp
++++ b/common/video_amiga.cpp
+@@ -627,7 +627,9 @@ static void Prof_Open()
+     }
+ }
+ 
+-unsigned long long Amiga_Prof_Acc[64];
++unsigned long long Amiga_Prof_Acc[96];
++unsigned long Amiga_Prof_Calls[16];
++unsigned long Amiga_Prof_Pixels[16];
+ static struct MsgPort* SleepPort = nullptr;
+ static struct timerequest* SleepReq = nullptr;
+ 
+@@ -814,7 +816,22 @@ void Video_Render_Frame()
+                         std::fclose(s2);
+                     }
+                 }
+-                for (int k = 0; k < 64; k++) {
++                {
++                    FILE* s3 = std::fopen("RAM:cnc-log.txt", "a");
++                    if (s3) {
++                        std::fprintf(s3, "SHAPES per frame (style: calls, kpixels, us):");
++                        for (int k = 0; k < 16; k++) {
++                            if (Amiga_Prof_Calls[k]) {
++                                std::fprintf(s3, " [%d: %lu, %lu, %lu]", k, Amiga_Prof_Calls[k] / 50, Amiga_Prof_Pixels[k] / 50000UL, (unsigned long)(Amiga_Prof_Acc[64 + k] * 1000000ULL / EFreq / 50));
++                            }
++                            Amiga_Prof_Calls[k] = 0;
++                            Amiga_Prof_Pixels[k] = 0;
++                        }
++                        std::fprintf(s3, "\n");
++                        std::fclose(s3);
++                    }
++                }
++                for (int k = 0; k < 96; k++) {
+                     Amiga_Prof_Acc[k] = 0;
+                 }
+             }
+-- 
+2.45.2.windows.1
+
