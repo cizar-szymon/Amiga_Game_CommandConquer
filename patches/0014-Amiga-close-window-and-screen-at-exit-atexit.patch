@@ -1,0 +1,56 @@
+From 9f7ebcdf814a3211d592b601dfafcb304998e5be Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Mon, 23 Nov 2026 00:03:38 +0100
+Subject: [PATCH 14/14] Amiga: close window and screen at exit (atexit)
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ common/video_amiga.cpp | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/common/video_amiga.cpp b/common/video_amiga.cpp
+index 247c0dc..4895458 100644
+--- a/common/video_amiga.cpp
++++ b/common/video_amiga.cpp
+@@ -95,6 +95,8 @@ SurfaceMonitorClass::SurfaceMonitorClass()
+     SurfacesRestored = false;
+ }
+ 
++void Reset_Video_Mode(void);
++
+ bool Set_Video_Mode(int w, int h, int bits_per_pixel)
+ {
+     if (AmigaScreen) {
+@@ -166,6 +168,15 @@ bool Set_Video_Mode(int w, int h, int bits_per_pixel)
+         SetPointer(AmigaWindow, BlankPointer, 1, 1, 0, 0);
+     }
+ 
++    {
++        // exit() (Ctrl-C, scripted quit, fatal errors) does not call Reset_Video_Mode: close the window and the
++        // screen then, otherwise every run leaves a black RTG screen in front of the Workbench
++        static bool registered = false;
++        if (!registered) {
++            registered = true;
++            std::atexit(Reset_Video_Mode);
++        }
++    }
+     ScreenW = w;
+     ScreenH = h;
+     MouseX = w / 2;
+@@ -180,6 +191,13 @@ bool Is_Video_Fullscreen()
+ 
+ void Reset_Video_Mode(void)
+ {
++    {
++        FILE* rf = std::fopen("RAM:cnc-log.txt", "a");
++        if (rf) {
++            std::fprintf(rf, "Reset_Video_Mode: window %p screen %p\n", (void*)AmigaWindow, (void*)AmigaScreen);
++            std::fclose(rf);
++        }
++    }
+     if (AmigaWindow) {
+         ClearPointer(AmigaWindow);
+         CloseWindow(AmigaWindow);
+-- 
+2.45.2.windows.1
+
