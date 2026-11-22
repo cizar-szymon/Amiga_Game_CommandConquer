@@ -1,0 +1,332 @@
+From 753f1f1a994ed787f83fdd52c10c76797a3db21a Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Sun, 22 Nov 2026 23:38:56 +0100
+Subject: [PATCH 12/12] Amiga: decoded effect cache, sound tuning, stack swap
+ and version tag, default paths
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ common/CMakeLists.txt     |  2 +-
+ common/amiga_stack.cpp    | 12 +++++
+ common/paths_amiga.cpp    |  8 +---
+ common/soundio_amiga.cpp  | 13 +++++-
+ common/soundio_common.cpp | 92 +++++++++++++++++++++++++++++++++++++++
+ common/video_amiga.cpp    |  4 +-
+ tiberiandawn/audio.cpp    |  3 ++
+ tiberiandawn/startup.cpp  |  6 ++-
+ 8 files changed, 127 insertions(+), 13 deletions(-)
+ create mode 100644 common/amiga_stack.cpp
+
+diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
+index 13e5916..b41058b 100644
+--- a/common/CMakeLists.txt
++++ b/common/CMakeLists.txt
+@@ -145,7 +145,7 @@ else()
+ endif()
+ 
+ if(AMIGA)
+-    list(APPEND COMMONV_SRC video_amiga.cpp wwkeyboard_amiga.cpp amiga_watchdog.cpp)
++    list(APPEND COMMONV_SRC video_amiga.cpp wwkeyboard_amiga.cpp amiga_watchdog.cpp amiga_stack.cpp)
+ elseif(DDRAW)
+     list(APPEND COMMONV_SRC video_ddraw.cpp wwkeyboard_win32.cpp)
+     list(APPEND VANILLA_LIBS ddraw)
+diff --git a/common/amiga_stack.cpp b/common/amiga_stack.cpp
+new file mode 100644
+index 0000000..d71d026
+--- /dev/null
++++ b/common/amiga_stack.cpp
+@@ -0,0 +1,12 @@
++// Stack size and version tag for the Amiga build (bebbo gcc / libnix).
++// __stack alone does not enlarge the stack: libnix swaps stacks only when swapstack.o (__stkinit) is
++// linked, so it is referenced here. Without it a start from the icon runs with the icon's stack.
++extern "C" {
++unsigned long __stack = 512 * 1024;
++extern void __stkinit(void);
++void (*const amiga_stack_swap)(void) = __stkinit;
++}
++
++#define CNC_PORT_VERSION "0.1"
++// Shell `Version` command; the release number is bumped for every build given to users.
++extern "C" const char amiga_version_tag[] = "$VER: CnC-TD " CNC_PORT_VERSION " (22.11.2026)";
+diff --git a/common/paths_amiga.cpp b/common/paths_amiga.cpp
+index 3289cf1..70bbb26 100644
+--- a/common/paths_amiga.cpp
++++ b/common/paths_amiga.cpp
+@@ -18,10 +18,7 @@ const char* PathsClass::Program_Path()
+ const char* PathsClass::Data_Path()
+ {
+     if (DataPath.empty()) {
+-        DataPath = "PROGDIR:data";
+-        if (!Suffix.empty()) {
+-            DataPath += SEP + Suffix;
+-        }
++        DataPath = "PROGDIR:data"; // one game per drawer: no suffix
+     }
+     return DataPath.c_str();
+ }
+@@ -30,9 +27,6 @@ const char* PathsClass::User_Path()
+ {
+     if (UserPath.empty()) {
+         UserPath = "PROGDIR:user";
+-        if (!Suffix.empty()) {
+-            UserPath += SEP + Suffix;
+-        }
+         Create_Directory(UserPath.c_str());
+     }
+     return UserPath.c_str();
+diff --git a/common/soundio_amiga.cpp b/common/soundio_amiga.cpp
+index c1d084b..833afb2 100644
+--- a/common/soundio_amiga.cpp
++++ b/common/soundio_amiga.cpp
+@@ -85,6 +85,8 @@ static struct Process* MixProc = nullptr;
+ 
+ static unsigned StatBlocks = 0, StatUnderruns = 0;
+ static time_t StatStart = 0;
++extern unsigned long long Amiga_Prof_Now();
++static unsigned long long StatMixTicks = 0;
+ static int MixBlock[BLK_MAX * 2];
+ static short OutBlock[BLK_MAX * 2];
+ 
+@@ -175,6 +177,7 @@ static void Mix_Tracker(int* acc, SampleTrackerTypeImp& t, int frames)
+ static void Mix_Output()
+ {
+     ++StatBlocks;
++    unsigned long long mix_t0 = Amiga_Prof_Now();
+     std::memset(MixBlock, 0, sizeof(int) * 2 * Blk);
+     ObtainSemaphore(&MixLock);
+     if (!Paused) {
+@@ -187,13 +190,14 @@ static void Mix_Output()
+     }
+     ReleaseSemaphore(&MixLock);
+     for (int i = 0; i < Blk * 2; ++i) {
+-        int v = MixBlock[i];
++        int v = (MixBlock[i] * 11) >> 4; // ~0.69: headroom, music plus several effects clip at full scale
+         if (v > 32767)
+             v = 32767;
+         else if (v < -32768)
+             v = -32768;
+         OutBlock[i] = (short)v;
+     }
++    StatMixTicks += Amiga_Prof_Now() - mix_t0;
+ }
+ 
+ // ---------------------------------------------------------------------------------- Paula
+@@ -612,7 +616,7 @@ static void Mixer_Main()
+         FreeSignal(QuitSig);
+     {
+         char msg[96];
+-        std::sprintf(msg, "mixer stopped after %ld s: %u blocks of %d frames, %u underruns", (long)(std::time(nullptr) - StatStart), StatBlocks, Blk, StatUnderruns);
++        std::sprintf(msg, "mixer stopped after %ld s: %u blocks of %d frames, %u underruns, mixing %lu ticks (%lu us per block)", (long)(std::time(nullptr) - StatStart), StatBlocks, Blk, StatUnderruns, (unsigned long)StatMixTicks, (unsigned long)(StatBlocks ? (StatMixTicks * 1000000ULL / 709379ULL) / StatBlocks : 0));
+         Log(msg);
+     }
+     Backend = MODE_OFF;
+@@ -755,6 +759,11 @@ void SoundImp_Buffer_Sample_Data(SampleTrackerTypeImp* st, const void* data, siz
+ 
+ int SoundImp_Get_Sample_Free_Buffer_Count(SampleTrackerTypeImp* st)
+ {
++    // Before the first Start only one buffer is asked for: the game layer would otherwise decode/copy three
++    // 8 KB chunks (twice) for every effect it starts; the service call tops the queue up on the next frames.
++    if (!st->Playing) {
++        return st->Count == 0 ? 1 : 0;
++    }
+     return NQ - st->Count;
+ }
+ 
+diff --git a/common/soundio_common.cpp b/common/soundio_common.cpp
+index fdc0e20..dd4795e 100644
+--- a/common/soundio_common.cpp
++++ b/common/soundio_common.cpp
+@@ -9,6 +9,7 @@
+ // distributed with this program. You should have received a copy of the
+ // GNU General Public License along with permitted additional restrictions
+ // with this program. If not, see https://github.com/electronicarts/CnC_Remastered_Collection
++#include "amiga_prof.h"
+ #include "audio.h"
+ #include "auduncmp.h"
+ #include "endianness.h"
+@@ -552,6 +553,7 @@ int File_Stream_Sample_Vol(char const* filename, int volume, bool real_time_star
+ 
+ void Sound_Callback()
+ {
++    PROF_SCOPE_N(prof_sound, 110);
+     if (!AudioDone && LockedData.DigiHandle != INVALID_AUDIO_HANDLE) {
+         Maintenance_Callback();
+ 
+@@ -604,6 +606,7 @@ void Sound_Callback()
+ 
+ static void Maintenance_Callback()
+ {
++    PROF_SCOPE_N(prof_maint, 109);
+     if (AudioDone) {
+         return;
+     }
+@@ -890,6 +893,8 @@ void Stop_Sample_Playing(const void* sample)
+ 
+ int Play_Sample(const void* sample, int priority, int volume, signed short panloc)
+ {
++    PROF_SCOPE_N(prof_play, 112);
++    PROF_COUNT(11);
+     return Play_Sample_Handle(sample, priority, volume, panloc, Get_Free_Sample_Handle(priority));
+ }
+ 
+@@ -905,6 +910,90 @@ static int Attempt_To_Play_Buffer(int id)
+     return id;
+ }
+ 
++#ifdef __amigaos__
++/*
++** Decoded effect cache. Decoding a compressed effect costs ~600 ns per sample on the 68060 and the
++** battle plays the same few effects over and over, so every effect is decoded once and then played
++** from memory as uncompressed data. The key holds the pointer, both sizes and a checksum of the start
++** of the data (a freed and reused address must not hit an old entry). Music streams do not use this.
++*/
++struct DecodedSample
++{
++    const void* Sample;
++    int CompSize;
++    int UncompSize;
++    unsigned Sum;
++    unsigned char* Pcm;
++    int Bytes;
++};
++static DecodedSample DecodedCache[96];
++static int DecodedCount = 0;
++static int DecodedTotal = 0;
++
++static unsigned Decoded_Sum(const void* sample)
++{
++    const unsigned char* p = static_cast<const unsigned char*>(sample) + sizeof(AUDHeaderType);
++    unsigned sum = 0;
++    for (int i = 0; i < 64; ++i) {
++        sum = sum * 31 + p[i];
++    }
++    return sum;
++}
++
++static void Use_Decoded_Sample(SampleTrackerType* st, const void* sample, int comp_size, int uncomp_size)
++{
++    if (st->Compression == SCOMP_NONE || comp_size < 64 || comp_size > 262144 || uncomp_size <= 0 || uncomp_size > 1048576) {
++        return;
++    }
++    const unsigned sum = Decoded_Sum(sample);
++    for (int i = 0; i < DecodedCount; ++i) {
++        const DecodedSample& d = DecodedCache[i];
++        if (d.Sample == sample && d.CompSize == comp_size && d.UncompSize == uncomp_size && d.Sum == sum) {
++            st->Compression = SCOMP_NONE;
++            st->Source = d.Pcm;
++            st->Remainder = d.Bytes;
++            return;
++        }
++    }
++    if (DecodedCount >= 96 || DecodedTotal + uncomp_size > (6 << 20)) {
++        return; // cache full: decode while playing, as before
++    }
++    unsigned char* pcm = static_cast<unsigned char*>(malloc(uncomp_size + BUFFER_CHUNK_SIZE));
++    if (!pcm) {
++        return;
++    }
++    void* src = st->Source;
++    int rem = st->Remainder;
++    void* qb = nullptr;
++    int qs = 0;
++    int total = 0;
++    for (;;) {
++        int n = Sample_Copy(st, &src, &rem, &qb, &qs, pcm + total, BUFFER_CHUNK_SIZE, st->Compression, nullptr, nullptr);
++        if (n > 0) {
++            total += n;
++        }
++        if (n != BUFFER_CHUNK_SIZE || total > uncomp_size) {
++            break;
++        }
++    }
++    if (total <= 0) {
++        free(pcm);
++        return;
++    }
++    DecodedSample& d = DecodedCache[DecodedCount++];
++    d.Sample = sample;
++    d.CompSize = comp_size;
++    d.UncompSize = uncomp_size;
++    d.Sum = sum;
++    d.Pcm = pcm;
++    d.Bytes = total;
++    DecodedTotal += uncomp_size;
++    st->Compression = SCOMP_NONE;
++    st->Source = pcm;
++    st->Remainder = total;
++}
++#endif
++
+ static int Play_Sample_Handle(const void* sample, int priority, int volume, signed short panloc, int id)
+ {
+     if (Any_Locked()) {
+@@ -956,6 +1045,9 @@ static int Play_Sample_Handle(const void* sample, int priority, int volume, sign
+             st->sosinfo.dwUnCompSize = raw_header.Size * (st->sosinfo.wBitSize / 4);
+             sosCODECInitStream(&st->sosinfo);
+         }
++#ifdef __amigaos__
++        Use_Decoded_Sample(st, sample, raw_header.Size, raw_header.UncompSize);
++#endif
+ 
+         // If the loaded sample doesn't match the sample tracker we need to adjust the tracker.
+         int new_bits_per_sample = (raw_header.Flags & 2) ? 16 : 8;
+diff --git a/common/video_amiga.cpp b/common/video_amiga.cpp
+index ff9f61d..247c0dc 100644
+--- a/common/video_amiga.cpp
++++ b/common/video_amiga.cpp
+@@ -835,9 +835,9 @@ void Video_Render_Frame()
+                 {
+                     FILE* s4 = std::fopen("RAM:cnc-log.txt", "a");
+                     if (s4) {
+-                        std::fprintf(s4, "COUNTS per frame: mark_foot %lu mark_object %lu occupy_down %lu occupy_up %lu overlap_down %lu overlap_up %lu redraw_objects %lu stamps %lu trans %lu copy %lu\n",
++                        std::fprintf(s4, "COUNTS per frame: mark_foot %lu mark_object %lu occupy_down %lu occupy_up %lu overlap_down %lu overlap_up %lu redraw_objects %lu stamps %lu trans %lu copy %lu sfx %lu play %lu\n",
+                                      Amiga_Prof_Cnt[0] / 50, Amiga_Prof_Cnt[1] / 50, Amiga_Prof_Cnt[2] / 50, Amiga_Prof_Cnt[3] / 50, Amiga_Prof_Cnt[4] / 50,
+-                                     Amiga_Prof_Cnt[5] / 50, Amiga_Prof_Cnt[6] / 50, Amiga_Prof_Cnt[7] / 50, Amiga_Prof_Cnt[8] / 50, Amiga_Prof_Cnt[9] / 50);
++                                     Amiga_Prof_Cnt[5] / 50, Amiga_Prof_Cnt[6] / 50, Amiga_Prof_Cnt[7] / 50, Amiga_Prof_Cnt[8] / 50, Amiga_Prof_Cnt[9] / 50, Amiga_Prof_Cnt[10] / 50, Amiga_Prof_Cnt[11] / 50);
+                         std::fclose(s4);
+                     }
+                     for (int k = 0; k < 32; k++) {
+diff --git a/tiberiandawn/audio.cpp b/tiberiandawn/audio.cpp
+index 3211550..d6d8d3e 100644
+--- a/tiberiandawn/audio.cpp
++++ b/tiberiandawn/audio.cpp
+@@ -38,6 +38,7 @@
+  *   Stop_Speaking -- Forces the EVA voice to stop talking.                                    *
+  * - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
+ 
++#include "amiga_prof.h"
+ #include "function.h"
+ 
+ /***************************************************************************
+@@ -301,6 +302,8 @@ void Sound_Effect(VocType voc, COORDINATE coord, int variation)
+  *=============================================================================================*/
+ int Sound_Effect(VocType voc, VolType volume, int variation, signed short pan_value)
+ {
++    PROF_SCOPE_N(prof_sfx, 111);
++    PROF_COUNT(10);
+     char name[_MAX_FNAME + _MAX_EXT]; // Working filename of sound effect.
+ 
+     if (!Options.Volume || voc == VOC_NONE || !SoundOn || SampleType == SAMPLE_NONE) {
+diff --git a/tiberiandawn/startup.cpp b/tiberiandawn/startup.cpp
+index b126485..342bb74 100644
+--- a/tiberiandawn/startup.cpp
++++ b/tiberiandawn/startup.cpp
+@@ -198,10 +198,14 @@ int DLL_Startup(const char* command_line_in)
+ }
+ #endif // REMASTER_BUILD
+ 
++#ifdef __amigaos__
++extern "C" const char amiga_version_tag[];
++extern "C" unsigned long __stack;
++#endif
+ int main(int argc, char** argv)
+ {
+ #ifdef __amigaos__
+-    { FILE* lf = fopen("RAM:cnc-log.txt", "w"); if (lf) { fprintf(lf, "main=%p\n", (void*)&main); fclose(lf); } } Debug_String_File("RAM:cnc-debug.txt"); { extern void Amiga_Start_Watchdog(); Amiga_Start_Watchdog(); }
++    { FILE* lf = fopen("RAM:cnc-log.txt", "w"); if (lf) { fprintf(lf, "main=%p\n", (void*)&main); fprintf(lf, "%s stack %lu\n", amiga_version_tag, __stack); fclose(lf); } } Debug_String_File("RAM:cnc-debug.txt"); { extern void Amiga_Start_Watchdog(); Amiga_Start_Watchdog(); }
+ #endif
+     UtfArgs args(argc, argv);
+     CCDebugString("C&C95 - Starting up.\n");
+-- 
+2.45.2.windows.1
+
