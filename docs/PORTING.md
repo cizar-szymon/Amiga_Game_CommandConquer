@@ -179,3 +179,7 @@ Pitfalls: never link amiga.lib (its sprintf breaks `%c`/`%d`); do not trust WinU
 ## Sound heard on the real Amiga (23.11.2026)
 
 The user heard the sound on Amiga 1 (A1200 + Warp) while test runs used the automatic choice, i.e. AHI. Earlier silence came from the Paula path (probably not the output the user listens to on a Warp: HDMI/warp.audio is reached through AHI) or from an old build. So: default AHI on a Warp card, Paula otherwise; `sound` file overrides. Still to check by ear: music quality, effect levels (output gain 0.69), speech (EVA), whether Paula is wanted at all on this machine. The black-screen problem of the same day was the RTG screen left open after `exit()` (fixed: window and screen closed with `atexit`).
+
+## Drawing glitches: gcc -O3 miscompiles LCW (23.11.2026)
+
+Black dashes in the radar logo/sidebar and see-through units on Amiga 1 (also in WinUAE) came from bebbo gcc 6.5 at `-O3`: `LCW_Uncompress` produced wrong pixels for overlapping copies (716 of 22720 bytes of HRADAR frame 0 wrong; zeros became transparent index 0). No single -O3 sub-flag was to blame (-O3 with every O3-only flag disabled was still wrong). Found with `tools/shpframe.py` (independent Python decoder), `tools/cmp_radar.py` and `tools/smoke/lcwtest.cpp`. Fix: Release built with `-O2` (`tools/cmake/amiga-m68k.cmake`), plus `-fno-strict-aliasing -fno-tree-loop-distribute-patterns`; `FIXIT_SCORE_CRASH` defined in keyframe.cpp (uninitialised `lockptr`). User confirmed the picture is correct. TODO: re-measure fps at -O2 vs the old -O3 numbers.

@@ -1,0 +1,28 @@
+From 8d5dcda1d4689b99434287f3a9bebd11771971a9 Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Mon, 23 Nov 2026 00:42:10 +0100
+Subject: [PATCH 15/15] keyframe: skip uninitialised DOS page logic
+
+---
+ common/keyframe.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/common/keyframe.cpp b/common/keyframe.cpp
+index 67b97b0..d551fef 100644
+--- a/common/keyframe.cpp
++++ b/common/keyframe.cpp
+@@ -234,6 +234,11 @@ void Enable_Uncompressed_Shapes()
+ 
+ #define FIXIT_SCORE_CRASH
+ 
++// The DOS 64 KB page logic below reads an uninitialised pointer (lockptr); skip it as Red Alert does
++#ifndef FIXIT_SCORE_CRASH
++#define FIXIT_SCORE_CRASH
++#endif
++
+ uintptr_t Build_Frame(void const* dataptr, unsigned short framenumber, void* buffptr)
+ {
+ #ifdef FIXIT_SCORE_CRASH
+-- 
+2.45.2.windows.1
+
