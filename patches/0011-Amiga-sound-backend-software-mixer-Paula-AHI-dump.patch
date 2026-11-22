@@ -1,0 +1,842 @@
+From 4badeec0034ee37d9144e37ccfcf9389d90a5fb7 Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Sun, 22 Nov 2026 22:37:41 +0100
+Subject: [PATCH 11/11] Amiga: sound backend (software mixer, Paula, AHI, dump)
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ common/CMakeLists.txt     |   4 +-
+ common/soundio_amiga.cpp  | 792 ++++++++++++++++++++++++++++++++++++++
+ common/soundio_common.cpp |   2 +-
+ 3 files changed, 796 insertions(+), 2 deletions(-)
+ create mode 100644 common/soundio_amiga.cpp
+
+diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
+index ac36b9e..13e5916 100644
+--- a/common/CMakeLists.txt
++++ b/common/CMakeLists.txt
+@@ -133,7 +133,9 @@ set(COMMONV_SRC
+     wwmouse.cpp
+ )
+ 
+-if(DSOUND)
++if(AMIGA)
++    list(APPEND COMMONV_SRC soundio_common.cpp soundio_amiga.cpp vqaaudio_null.cpp)
++elseif(DSOUND)
+     list(APPEND COMMONV_SRC soundio.cpp vqaaudio_dsound.cpp)
+     list(APPEND VANILLA_LIBS dsound)
+ elseif(OPENAL)
+diff --git a/common/soundio_amiga.cpp b/common/soundio_amiga.cpp
+new file mode 100644
+index 0000000..c1d084b
+--- /dev/null
++++ b/common/soundio_amiga.cpp
+@@ -0,0 +1,792 @@
++// AmigaOS sound backend for Vanilla Conquer: software mixer + Paula (audio.device) or AHI.
++//
++// The game layer (soundio_common.cpp) has up to 5 "sample trackers" (sound effect voices and the music
++// stream), each feeding queued PCM buffers (8 bit unsigned or 16 bit signed, mono or stereo, 11025 or
++// 22050 Hz). This file mixes them in a separate task into one stereo 16 bit stream at OUT_RATE and plays
++// it either through Paula (two channels, 8 bit, three buffers per channel) or through AHI (two dynamic
++// sounds played in turn, 16 bit stereo, the SoundFunc hook queues the other one).
++//
++// Choice: file PROGDIR:sound containing "paula" (default), "ahi", "dump" (mixed stream to
++// RAM:cnc-sound.raw, 16 bit big endian stereo, for checking without ears) or "off".
++#include "soundio_imp.h"
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <ctime>
++
++#include <exec/types.h>
++#include <exec/memory.h>
++#include <exec/semaphores.h>
++#include <exec/execbase.h>
++#include <devices/audio.h>
++#include <devices/ahi.h>
++#include <devices/timer.h>
++#include <dos/dostags.h>
++#include <utility/hooks.h>
++#include <proto/exec.h>
++#include <proto/dos.h>
++#include <proto/ahi.h>
++#include <proto/timer.h>
++
++struct Library* AHIBase = nullptr;
++extern struct ExecBase* SysBase;
++
++#define OUT_RATE 22050
++#define BLK_MAX 1536
++static int Blk = 768; // frames per output block: Paula 768 (35 ms), AHI needs more (see Mixer_Main)
++#define NQ 3      // queued buffers per tracker
++#define QCAP 16384
++#define MAX_TRACKERS 8
++#define PAULA_BUFS 3
++
++struct QBuf
++{
++    unsigned char* Data;
++    unsigned Frames;
++    int Bits;
++    bool Stereo;
++    unsigned Rate;
++};
++
++struct SampleTrackerTypeImp
++{
++    int Bits;
++    bool Stereo;
++    unsigned Rate;
++    QBuf Q[NQ];
++    int Head;
++    int Count;
++    unsigned Frac; // 16.16 position inside Q[Head]
++    unsigned Volume; // 65536 = full
++    bool Playing;
++    bool Used;
++};
++
++static SampleTrackerTypeImp Trackers[MAX_TRACKERS];
++static struct SignalSemaphore MixLock;
++static volatile bool Paused = false;
++
++enum Mode
++{
++    MODE_OFF,
++    MODE_PAULA,
++    MODE_AHI,
++    MODE_DUMP
++};
++static Mode Backend = MODE_OFF;
++
++static struct Task* MixTask = nullptr;
++static struct Task* ParentTask = nullptr;
++static volatile int Ready = 0; // 0 starting, 1 ok, -1 failed
++static volatile bool Quit = false;
++static BYTE QuitSig = -1;
++static int AhiBlock = 1024; // frames per AHI sound; read from PROGDIR:sound as 'ahi 1280' for tests
++static struct Process* MixProc = nullptr;
++
++static unsigned StatBlocks = 0, StatUnderruns = 0;
++static time_t StatStart = 0;
++static int MixBlock[BLK_MAX * 2];
++static short OutBlock[BLK_MAX * 2];
++
++static void Log(const char* msg)
++{
++    FILE* f = std::fopen("RAM:cnc-sound-log.txt", "a");
++    if (f) {
++        std::fputs(msg, f);
++        std::fputs("\n", f);
++        std::fclose(f);
++    }
++}
++
++// ---------------------------------------------------------------------------------- mixer
++
++template <int BITS, bool STEREO>
++static void Mix_Segment(int* acc, const QBuf& b, unsigned& frac, unsigned step, unsigned vol, int n)
++{
++    const unsigned char* d8 = b.Data;
++    const short* d16 = reinterpret_cast<const short*>(b.Data);
++    unsigned f = frac;
++    for (int i = 0; i < n; ++i) {
++        unsigned idx = f >> 16;
++        int l, r;
++        if (BITS == 8) {
++            if (STEREO) {
++                l = ((int)d8[idx * 2] - 128) << 8;
++                r = ((int)d8[idx * 2 + 1] - 128) << 8;
++            } else {
++                l = r = ((int)d8[idx] - 128) << 8;
++            }
++        } else {
++            if (STEREO) {
++                l = d16[idx * 2];
++                r = d16[idx * 2 + 1];
++            } else {
++                l = r = d16[idx];
++            }
++        }
++        acc[0] += (int)(((long)l * (long)vol) >> 16);
++        acc[1] += (int)(((long)r * (long)vol) >> 16);
++        acc += 2;
++        f += step;
++    }
++    frac = f;
++}
++
++static void Mix_Tracker(int* acc, SampleTrackerTypeImp& t, int frames)
++{
++    int done = 0;
++    while (done < frames && t.Count > 0) {
++        QBuf& b = t.Q[t.Head];
++        const unsigned step = (unsigned)(((unsigned long)b.Rate << 16) / OUT_RATE);
++        const unsigned total = b.Frames << 16;
++        if (t.Frac >= total) {
++            t.Frac -= total;
++            t.Head = (t.Head + 1) % NQ;
++            --t.Count;
++            continue;
++        }
++        unsigned avail = total - t.Frac;
++        int n = (int)((avail + step - 1) / step);
++        if (n > frames - done) {
++            n = frames - done;
++        }
++        int* a = acc + done * 2;
++        if (b.Bits == 8) {
++            if (b.Stereo)
++                Mix_Segment<8, true>(a, b, t.Frac, step, t.Volume, n);
++            else
++                Mix_Segment<8, false>(a, b, t.Frac, step, t.Volume, n);
++        } else {
++            if (b.Stereo)
++                Mix_Segment<16, true>(a, b, t.Frac, step, t.Volume, n);
++            else
++                Mix_Segment<16, false>(a, b, t.Frac, step, t.Volume, n);
++        }
++        done += n;
++        if (t.Frac >= total) {
++            t.Frac -= total;
++            t.Head = (t.Head + 1) % NQ;
++            --t.Count;
++        }
++    }
++}
++
++// Mix BLK frames into OutBlock (interleaved L R, 16 bit signed).
++static void Mix_Output()
++{
++    ++StatBlocks;
++    std::memset(MixBlock, 0, sizeof(int) * 2 * Blk);
++    ObtainSemaphore(&MixLock);
++    if (!Paused) {
++        for (int i = 0; i < MAX_TRACKERS; ++i) {
++            SampleTrackerTypeImp& t = Trackers[i];
++            if (t.Used && t.Playing && t.Count > 0) {
++                Mix_Tracker(MixBlock, t, Blk);
++            }
++        }
++    }
++    ReleaseSemaphore(&MixLock);
++    for (int i = 0; i < Blk * 2; ++i) {
++        int v = MixBlock[i];
++        if (v > 32767)
++            v = 32767;
++        else if (v < -32768)
++            v = -32768;
++        OutBlock[i] = (short)v;
++    }
++}
++
++// ---------------------------------------------------------------------------------- Paula
++
++static struct MsgPort* AudPort = nullptr;
++static struct IOAudio* AudAlloc = nullptr;
++static struct IOAudio* AudIO[PAULA_BUFS][2];
++static signed char* AudBuf[PAULA_BUFS][2];
++static unsigned char AudBusy[PAULA_BUFS];
++
++static void Paula_Send(int b)
++{
++    for (int c = 0; c < 2; ++c) {
++        AudIO[b][c]->ioa_Request.io_Command = CMD_WRITE;
++        AudIO[b][c]->ioa_Request.io_Flags = ADIOF_PERVOL;
++        AudIO[b][c]->ioa_Length = Blk;
++        SendIO((struct IORequest*)AudIO[b][c]); // (BeginIO would need amiga.lib)
++    }
++    AudBusy[b] = 2;
++}
++
++static void Paula_Fill_And_Send(int b)
++{
++    Mix_Output();
++    for (int i = 0; i < Blk; ++i) {
++        AudBuf[b][0][i] = (signed char)(OutBlock[i * 2] >> 8);     // left
++        AudBuf[b][1][i] = (signed char)(OutBlock[i * 2 + 1] >> 8); // right
++    }
++    Paula_Send(b);
++}
++
++static bool Paula_Open()
++{
++    static UBYTE channels[] = {3, 5, 10, 12}; // one left (0 or 3) and one right (1 or 2) channel
++    const ULONG clock = (SysBase->VBlankFrequency == 50) ? 3546895UL : 3579545UL;
++
++    AudPort = CreateMsgPort();
++    if (!AudPort) {
++        return false;
++    }
++    AudAlloc = (struct IOAudio*)CreateIORequest(AudPort, sizeof(struct IOAudio));
++    if (!AudAlloc) {
++        return false;
++    }
++    AudAlloc->ioa_Request.io_Message.mn_Node.ln_Pri = 1;
++    AudAlloc->ioa_Request.io_Flags = ADIOF_NOWAIT;
++    AudAlloc->ioa_Data = channels;
++    AudAlloc->ioa_Length = sizeof(channels);
++    if (OpenDevice((CONST_STRPTR)AUDIONAME, 0, (struct IORequest*)AudAlloc, 0)) {
++        DeleteIORequest((struct IORequest*)AudAlloc);
++        AudAlloc = nullptr;
++        return false;
++    }
++    ULONG units = (ULONG)AudAlloc->ioa_Request.io_Unit;
++    for (int b = 0; b < PAULA_BUFS; ++b) {
++        for (int c = 0; c < 2; ++c) {
++            AudBuf[b][c] = (signed char*)AllocMem(BLK_MAX, MEMF_CHIP | MEMF_CLEAR);
++            struct IOAudio* io = (struct IOAudio*)AllocMem(sizeof(struct IOAudio), MEMF_PUBLIC);
++            if (!AudBuf[b][c] || !io) {
++                return false;
++            }
++            *io = *AudAlloc;
++            io->ioa_Request.io_Unit = (struct Unit*)(units & (c ? 0x06 : 0x09));
++            io->ioa_Data = (UBYTE*)AudBuf[b][c];
++            // period rounded up: the real rate is never above OUT_RATE (PAL: 161 -> 22 030 Hz)
++            io->ioa_Period = (UWORD)((clock + OUT_RATE - 1) / OUT_RATE);
++            io->ioa_Volume = 64;
++            io->ioa_Cycles = 1;
++            AudIO[b][c] = io;
++        }
++    }
++    for (int b = 0; b < PAULA_BUFS; ++b) {
++        Paula_Fill_And_Send(b);
++    }
++    return true;
++}
++
++static void Paula_Close()
++{
++    for (int b = 0; b < PAULA_BUFS; ++b) {
++        for (int c = 0; c < 2; ++c) {
++            if (AudIO[b][c]) {
++                if (AudBusy[b]) {
++                    AbortIO((struct IORequest*)AudIO[b][c]);
++                    WaitIO((struct IORequest*)AudIO[b][c]);
++                }
++                FreeMem(AudIO[b][c], sizeof(struct IOAudio));
++                AudIO[b][c] = nullptr;
++            }
++            if (AudBuf[b][c]) {
++                FreeMem(AudBuf[b][c], BLK_MAX);
++                AudBuf[b][c] = nullptr;
++            }
++        }
++    }
++    if (AudAlloc) {
++        CloseDevice((struct IORequest*)AudAlloc);
++        DeleteIORequest((struct IORequest*)AudAlloc);
++        AudAlloc = nullptr;
++    }
++    if (AudPort) {
++        DeleteMsgPort(AudPort);
++        AudPort = nullptr;
++    }
++}
++
++static void Paula_Service()
++{
++    struct IOAudio* io;
++    while ((io = (struct IOAudio*)GetMsg(AudPort)) != nullptr) {
++        for (int b = 0; b < PAULA_BUFS; ++b) {
++            for (int c = 0; c < 2; ++c) {
++                if (AudIO[b][c] == io && AudBusy[b]) {
++                    --AudBusy[b];
++                }
++            }
++        }
++    }
++    {
++        int idle = 0;
++        for (int b = 0; b < PAULA_BUFS; ++b) {
++            if (!AudBusy[b]) {
++                ++idle;
++            }
++        }
++        if (idle == PAULA_BUFS) {
++            ++StatUnderruns; // Paula ran dry: a gap in the sound
++        }
++    }
++    for (int b = 0; b < PAULA_BUFS; ++b) {
++        if (!AudBusy[b]) {
++            Paula_Fill_And_Send(b);
++        }
++    }
++}
++
++// ---------------------------------------------------------------------------------- AHI
++
++static struct MsgPort* AhiPort = nullptr;
++static struct AHIRequest* AhiIO = nullptr;
++static struct AHIAudioCtrl* Actrl = nullptr;
++static short* AhiBuf[2] = {nullptr, nullptr};
++static BYTE AhiSig = -1;
++static volatile UWORD AhiQueued = 1;
++static volatile UWORD AhiToFill = 0;
++static volatile unsigned AhiSwaps = 0;
++static unsigned AhiHandled = 0;
++
++// The hook is entered by AHI with a0 = hook, a2 = audio control, a1 = message.
++extern "C" ULONG cnc_ahi_sound_func(struct Hook* hook, struct AHIAudioCtrl* ac, struct AHISoundMessage* msg)
++{
++    (void)hook;
++    (void)msg;
++    AhiQueued ^= 1;
++    AHI_SetSound(0, AhiQueued, 0, 0, ac, 0);
++    AhiToFill = AhiQueued;
++    ++AhiSwaps;
++    Signal(MixTask, 1UL << AhiSig);
++    return 0;
++}
++
++// asm trampoline: like HookEntry of amiga.lib (which must not be linked: its sprintf shadows libnix)
++__asm__(".text\n"
++        ".even\n"
++        ".globl _cnc_ahi_hook_entry\n"
++        "_cnc_ahi_hook_entry:\n"
++        "\tmove.l %a1,-(%sp)\n"
++        "\tmove.l %a2,-(%sp)\n"
++        "\tmove.l %a0,-(%sp)\n"
++        "\tmove.l 12(%a0),%a0\n"
++        "\tjsr (%a0)\n"
++        "\tlea 12(%sp),%sp\n"
++        "\trts\n");
++extern "C" ULONG cnc_ahi_hook_entry();
++
++static struct Hook AhiHook;
++
++static bool Ahi_Open()
++{
++    AhiPort = CreateMsgPort();
++    if (!AhiPort) {
++        return false;
++    }
++    AhiIO = (struct AHIRequest*)CreateIORequest(AhiPort, sizeof(struct AHIRequest));
++    if (!AhiIO) {
++        return false;
++    }
++    AhiIO->ahir_Version = 4;
++    if (OpenDevice((CONST_STRPTR)AHINAME, AHI_NO_UNIT, (struct IORequest*)AhiIO, 0)) {
++        DeleteIORequest((struct IORequest*)AhiIO);
++        AhiIO = nullptr;
++        return false;
++    }
++    AHIBase = (struct Library*)AhiIO->ahir_Std.io_Device;
++
++    AhiSig = AllocSignal(-1);
++    for (int i = 0; i < 2; ++i) {
++        AhiBuf[i] = (short*)AllocVec(BLK_MAX * 2 * sizeof(short), MEMF_PUBLIC | MEMF_CLEAR);
++    }
++    if (AhiSig < 0 || !AhiBuf[0] || !AhiBuf[1]) {
++        return false;
++    }
++    AhiHook.h_Entry = (ULONG (*)())(void*)cnc_ahi_hook_entry;
++    AhiHook.h_SubEntry = (ULONG (*)())(void*)cnc_ahi_sound_func;
++    Actrl = AHI_AllocAudio(AHIA_AudioID,
++                           AHI_DEFAULT_ID,
++                           AHIA_MixFreq,
++                           AHI_DEFAULT_FREQ,
++                           AHIA_Channels,
++                           1,
++                           AHIA_Sounds,
++                           2,
++                           AHIA_SoundFunc,
++                           (ULONG)&AhiHook,
++                           TAG_DONE);
++    if (!Actrl) {
++        return false;
++    }
++    for (int i = 0; i < 2; ++i) {
++        struct AHISampleInfo info;
++        info.ahisi_Type = AHIST_S16S;
++        info.ahisi_Address = AhiBuf[i];
++        info.ahisi_Length = Blk;
++        if (AHI_LoadSound((UWORD)i, AHIST_DYNAMICSAMPLE, &info, Actrl) != AHIE_OK) {
++            return false;
++        }
++    }
++    // fill both buffers before playing
++    for (int i = 0; i < 2; ++i) {
++        Mix_Output();
++        std::memcpy(AhiBuf[i], OutBlock, sizeof(short) * 2 * Blk);
++    }
++    if (AHI_ControlAudio(Actrl, AHIC_Play, TRUE, TAG_DONE) != AHIE_OK) {
++        return false;
++    }
++    AhiQueued = 1; // the hook flips it to 0 when sound 0 starts
++    AHI_Play(Actrl,
++             AHIP_BeginChannel,
++             0,
++             AHIP_Freq,
++             OUT_RATE,
++             AHIP_Vol,
++             0x10000,
++             AHIP_Pan,
++             0x8000,
++             AHIP_Sound,
++             0,
++             AHIP_EndChannel,
++             NULL,
++             TAG_DONE);
++    return true;
++}
++
++static void Ahi_Close()
++{
++    if (Actrl) {
++        AHI_ControlAudio(Actrl, AHIC_Play, FALSE, TAG_DONE);
++        AHI_FreeAudio(Actrl);
++        Actrl = nullptr;
++    }
++    if (AhiIO) {
++        CloseDevice((struct IORequest*)AhiIO);
++        DeleteIORequest((struct IORequest*)AhiIO);
++        AhiIO = nullptr;
++    }
++    if (AhiPort) {
++        DeleteMsgPort(AhiPort);
++        AhiPort = nullptr;
++    }
++    for (int i = 0; i < 2; ++i) {
++        if (AhiBuf[i]) {
++            FreeVec(AhiBuf[i]);
++            AhiBuf[i] = nullptr;
++        }
++    }
++    if (AhiSig >= 0) {
++        FreeSignal(AhiSig);
++        AhiSig = -1;
++    }
++}
++
++static void Ahi_Service()
++{
++    if (AhiSwaps != AhiHandled) {
++        if (AhiSwaps - AhiHandled > 1) {
++            ++StatUnderruns; // a buffer played before it was refilled
++            if (StatUnderruns <= 12 || (StatUnderruns % 20) == 0) {
++                char m[96];
++                std::sprintf(m, "ahi miss #%u at %ld s: %u swaps behind", StatUnderruns, (long)(std::time(nullptr) - StatStart), (unsigned)(AhiSwaps - AhiHandled));
++                Log(m);
++            }
++        }
++        AhiHandled = AhiSwaps;
++        Mix_Output();
++        std::memcpy(AhiBuf[AhiToFill], OutBlock, sizeof(short) * 2 * Blk);
++    }
++}
++
++// ---------------------------------------------------------------------------------- task
++
++static const char* Read_Mode_File()
++{
++    static char word[16];
++    word[0] = 0;
++    FILE* f = std::fopen("PROGDIR:sound", "r");
++    if (f) {
++        if (std::fscanf(f, "%15s", word) != 1) {
++            word[0] = 0;
++        }
++        std::fclose(f);
++    }
++    return word;
++}
++
++static void Mixer_Main()
++{
++    MixTask = FindTask(nullptr);
++    struct timerequest* treq = nullptr;
++    struct MsgPort* tport = nullptr;
++    FILE* dump = nullptr;
++    Mode want = MODE_PAULA;
++    const char* w = Read_Mode_File();
++    {
++        FILE* nf = std::fopen("PROGDIR:sound", "r");
++        if (nf) {
++            char tmp[16];
++            int n = 0;
++            if (std::fscanf(nf, "%15s %d", tmp, &n) == 2 && n >= 256 && n <= BLK_MAX) {
++                AhiBlock = n;
++            }
++            std::fclose(nf);
++        }
++    }
++    if (!std::strcmp(w, "ahi"))
++        want = MODE_AHI;
++    else if (!std::strcmp(w, "dump"))
++        want = MODE_DUMP;
++    else if (!std::strcmp(w, "off"))
++        want = MODE_OFF;
++
++    QuitSig = AllocSignal(-1);
++    Backend = MODE_OFF;
++    Blk = 768;
++    if (want == MODE_PAULA) {
++        if (Paula_Open()) {
++            Backend = MODE_PAULA;
++        } else {
++            Paula_Close();
++            want = MODE_AHI; // Paula channels busy: try AHI
++        }
++    }
++    if (want == MODE_AHI && Backend == MODE_OFF) {
++        Blk = AhiBlock;
++        if (Ahi_Open()) {
++            Backend = MODE_AHI;
++        } else {
++            Ahi_Close();
++        }
++    }
++    if (want == MODE_DUMP) {
++        dump = std::fopen("RAM:cnc-sound.raw", "wb");
++        tport = CreateMsgPort();
++        treq = tport ? (struct timerequest*)CreateIORequest(tport, sizeof(struct timerequest)) : nullptr;
++        if (dump && treq && OpenDevice((CONST_STRPTR)TIMERNAME, UNIT_MICROHZ, (struct IORequest*)treq, 0) == 0) {
++            Backend = MODE_DUMP;
++        }
++    }
++    {
++        char msg[64];
++        std::sprintf(msg, "sound backend %d (1 Paula, 2 AHI, 3 dump, 0 none), requested '%s'", (int)Backend, w);
++        Log(msg);
++    }
++    StatStart = std::time(nullptr);
++    Ready = (Backend == MODE_OFF) ? -1 : 1;
++    Signal(ParentTask, SIGF_SINGLE);
++
++    while (!Quit && Backend != MODE_OFF) {
++        ULONG sigs = 0;
++        if (Backend == MODE_PAULA) {
++            sigs = Wait((1UL << AudPort->mp_SigBit) | (1UL << QuitSig));
++            if (sigs & (1UL << AudPort->mp_SigBit)) {
++                Paula_Service();
++            }
++        } else if (Backend == MODE_AHI) {
++            sigs = Wait((1UL << AhiSig) | (1UL << QuitSig));
++            if (sigs & (1UL << AhiSig)) {
++                Ahi_Service();
++            }
++        } else {
++            // dump: one block per real time block
++            Mix_Output();
++            std::fwrite(OutBlock, sizeof(short), Blk * 2, dump);
++            treq->tr_node.io_Command = TR_ADDREQUEST;
++            treq->tr_time.tv_secs = 0;
++            treq->tr_time.tv_micro = (Blk * 1000000UL) / OUT_RATE;
++            DoIO((struct IORequest*)treq);
++            if (SetSignal(0, 1UL << QuitSig) & (1UL << QuitSig)) {
++                break;
++            }
++        }
++    }
++
++    if (Backend == MODE_PAULA)
++        Paula_Close();
++    if (Backend == MODE_AHI)
++        Ahi_Close();
++    if (dump)
++        std::fclose(dump);
++    if (treq) {
++        CloseDevice((struct IORequest*)treq);
++        DeleteIORequest((struct IORequest*)treq);
++    }
++    if (tport)
++        DeleteMsgPort(tport);
++    if (QuitSig >= 0)
++        FreeSignal(QuitSig);
++    {
++        char msg[96];
++        std::sprintf(msg, "mixer stopped after %ld s: %u blocks of %d frames, %u underruns", (long)(std::time(nullptr) - StatStart), StatBlocks, Blk, StatUnderruns);
++        Log(msg);
++    }
++    Backend = MODE_OFF;
++    MixTask = nullptr;
++    Ready = 2; // finished (read by the parent)
++}
++
++// ---------------------------------------------------------------------------------- interface
++
++static bool ShutDown;
++void SoundImp_Shutdown();
++
++bool SoundImp_Init(int bits_per_sample, bool stereo, int rate, bool reverse_channels)
++{
++    (void)bits_per_sample;
++    (void)stereo;
++    (void)rate;
++    (void)reverse_channels;
++    InitSemaphore(&MixLock);
++    ShutDown = false;
++    std::atexit(SoundImp_Shutdown); // exit() from Ctrl-C does not call Sound_End: the task must not outlive the program
++    std::memset(Trackers, 0, sizeof(Trackers));
++    Quit = false;
++    Ready = 0;
++    ParentTask = FindTask(nullptr);
++    SetSignal(0, SIGF_SINGLE);
++    MixProc = CreateNewProcTags(NP_Entry,
++                                (ULONG)Mixer_Main,
++                                NP_Name,
++                                (ULONG) "cnc-audio",
++                                NP_Priority,
++                                12UL,
++                                NP_StackSize,
++                                24576UL,
++                                TAG_DONE);
++    if (!MixProc) {
++        return false;
++    }
++    Wait(SIGF_SINGLE);
++    return Ready == 1;
++}
++
++void SoundImp_Shutdown()
++{
++    if (ShutDown) {
++        return;
++    }
++    ShutDown = true;
++    if (MixTask) {
++        Quit = true;
++        Signal(MixTask, 1UL << QuitSig);
++        if (Backend == MODE_AHI && AhiSig >= 0) {
++            Signal(MixTask, 1UL << AhiSig);
++        }
++        for (int i = 0; i < 300 && Ready != 2; ++i) {
++            Delay(1);
++        }
++        Delay(5); // the task is still returning from its entry function
++    }
++    for (int i = 0; i < MAX_TRACKERS; ++i) {
++        for (int q = 0; q < NQ; ++q) {
++            if (Trackers[i].Q[q].Data) {
++                std::free(Trackers[i].Q[q].Data);
++                Trackers[i].Q[q].Data = nullptr;
++            }
++        }
++    }
++}
++
++SampleTrackerTypeImp* SoundImp_Init_Sample(int bits_per_sample, bool stereo, int rate)
++{
++    for (int i = 0; i < MAX_TRACKERS; ++i) {
++        SampleTrackerTypeImp& t = Trackers[i];
++        if (!t.Used) {
++            ObtainSemaphore(&MixLock);
++            std::memset(&t, 0, sizeof(t));
++            t.Used = true;
++            t.Bits = bits_per_sample;
++            t.Stereo = stereo;
++            t.Rate = (unsigned)rate;
++            t.Volume = 65536;
++            for (int q = 0; q < NQ; ++q) {
++                t.Q[q].Data = (unsigned char*)std::malloc(QCAP);
++            }
++            ReleaseSemaphore(&MixLock);
++            return &t;
++        }
++    }
++    return nullptr;
++}
++
++void SoundImp_Shutdown_Sample(SampleTrackerTypeImp* st)
++{
++    if (!st) {
++        return;
++    }
++    ObtainSemaphore(&MixLock);
++    st->Playing = false;
++    st->Count = 0;
++    st->Used = false;
++    for (int q = 0; q < NQ; ++q) {
++        if (st->Q[q].Data) {
++            std::free(st->Q[q].Data);
++            st->Q[q].Data = nullptr;
++        }
++    }
++    ReleaseSemaphore(&MixLock);
++}
++
++void SoundImp_Set_Sample_Attributes(SampleTrackerTypeImp* st, int bits_per_sample, bool stereo, int rate)
++{
++    st->Bits = bits_per_sample;
++    st->Stereo = stereo;
++    st->Rate = (unsigned)rate;
++}
++
++void SoundImp_Set_Sample_Volume(SampleTrackerTypeImp* st, unsigned int volume)
++{
++    st->Volume = volume > 262144u ? 262144u : volume;
++}
++
++void SoundImp_Buffer_Sample_Data(SampleTrackerTypeImp* st, const void* data, size_t datalen)
++{
++    if (datalen == 0 || datalen > QCAP) {
++        return;
++    }
++    ObtainSemaphore(&MixLock);
++    if (st->Count < NQ) {
++        int slot = (st->Head + st->Count) % NQ;
++        QBuf& b = st->Q[slot];
++        std::memcpy(b.Data, data, datalen);
++        b.Bits = st->Bits;
++        b.Stereo = st->Stereo;
++        b.Rate = st->Rate;
++        b.Frames = (unsigned)(datalen / ((st->Bits / 8) * (st->Stereo ? 2 : 1)));
++        ++st->Count;
++    }
++    ReleaseSemaphore(&MixLock);
++}
++
++int SoundImp_Get_Sample_Free_Buffer_Count(SampleTrackerTypeImp* st)
++{
++    return NQ - st->Count;
++}
++
++bool SoundImp_Sample_Status(SampleTrackerTypeImp* st)
++{
++    return st->Playing && st->Count > 0;
++}
++
++void SoundImp_Start_Sample(SampleTrackerTypeImp* st)
++{
++    ObtainSemaphore(&MixLock);
++    st->Playing = true;
++    ReleaseSemaphore(&MixLock);
++}
++
++void SoundImp_Stop_Sample(SampleTrackerTypeImp* st)
++{
++    ObtainSemaphore(&MixLock);
++    st->Playing = false;
++    st->Count = 0;
++    st->Head = 0;
++    st->Frac = 0;
++    ReleaseSemaphore(&MixLock);
++}
++
++void SoundImp_PauseSound()
++{
++    Paused = true;
++}
++
++bool SoundImp_ResumeSound()
++{
++    Paused = false;
++    return true;
++}
+diff --git a/common/soundio_common.cpp b/common/soundio_common.cpp
+index 4597ca6..fdc0e20 100644
+--- a/common/soundio_common.cpp
++++ b/common/soundio_common.cpp
+@@ -725,7 +725,7 @@ static int Sample_Read(int fh, void* buffer, int size)
+ 
+     AUDHeaderType header;
+     int actual_bytes_read = Read_File(fh, &header, sizeof(AUDHeaderType));
+-    int to_read = std::min<unsigned>(size - sizeof(AUDHeaderType), header.Size);
++    int to_read = std::min<unsigned>(size - sizeof(AUDHeaderType), le32toh(header.Size)); // header is little endian
+ 
+     actual_bytes_read += Read_File(fh, static_cast<char*>(buffer) + sizeof(AUDHeaderType), to_read);
+ 
+-- 
+2.45.2.windows.1
+

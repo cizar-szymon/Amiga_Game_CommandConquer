@@ -1,7 +1,7 @@
 From 8800ec7242e31fa2b0f97e6b6650ca0ee757a24b Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Sun, 22 Nov 2026 19:37:38 +0100
-Subject: [PATCH 04/10] Amiga: autoinput scripting, nomovies switch, '.' data
+Subject: [PATCH 04/11] Amiga: autoinput scripting, nomovies switch, '.' data
  dir on AmigaDOS
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
