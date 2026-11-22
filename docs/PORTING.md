@@ -175,3 +175,7 @@ Open work, in order: (1) listen test of Paula and AHI, fps cost of sound; (2) so
 
 Pitfalls: never link amiga.lib (its sprintf breaks `%c`/`%d`); do not trust WinUAE for speed; check the Amiga with `titles` and `Status` before starting a game; a stray game on Amiga 1 can freeze the machine (reset needed, the user does it); python in Git Bash: use `C:/...` paths and avoid `
 ` inside heredocs (use the Write/Edit tools for C++ with escapes).
+
+## Sound heard on the real Amiga (23.11.2026)
+
+The user heard the sound on Amiga 1 (A1200 + Warp) while test runs used the automatic choice, i.e. AHI. Earlier silence came from the Paula path (probably not the output the user listens to on a Warp: HDMI/warp.audio is reached through AHI) or from an old build. So: default AHI on a Warp card, Paula otherwise; `sound` file overrides. Still to check by ear: music quality, effect levels (output gain 0.69), speech (EVA), whether Paula is wanted at all on this machine. The black-screen problem of the same day was the RTG screen left open after `exit()` (fixed: window and screen closed with `atexit`).
