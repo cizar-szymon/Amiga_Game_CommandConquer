@@ -1,0 +1,392 @@
+From b5e8e95173abb232e9017c54476d5aaaa54d05a3 Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Mon, 23 Nov 2026 18:59:37 +0100
+Subject: [PATCH 24/24] Movie sound: stream FIFO 1 MB, drop when full (no
+ loader sleep: it hung Red Alert), drift correction to the movie timer,
+ MovieLag, loader TempBuf fixes, Paula output direct, watchdog task dump
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017g4PoTADs6Z5A5aMeTycB9
+---
+ common/amiga_watchdog.cpp   | 33 +++++++++++++++-----
+ common/moviepaula_amiga.cpp |  9 +-----
+ common/soundio_amiga.cpp    | 62 ++++++++++++++++++++++++++++++-------
+ common/vqaaudio_amiga.cpp   | 48 ++++++++++++++++++++++++----
+ common/vqaloader.cpp        | 18 ++++++++++-
+ 5 files changed, 135 insertions(+), 35 deletions(-)
+
+diff --git a/common/amiga_watchdog.cpp b/common/amiga_watchdog.cpp
+index 9ae4893..d694f04 100644
+--- a/common/amiga_watchdog.cpp
++++ b/common/amiga_watchdog.cpp
+@@ -12,6 +12,8 @@
+ #include <dos/dostags.h>
+ #include <proto/exec.h>
+ #include <proto/dos.h>
++#include <exec/execbase.h>
++extern struct ExecBase* SysBase;
+ 
+ volatile unsigned Amiga_Heartbeat = 0;
+ 
+@@ -19,23 +21,39 @@ static struct Task* MainTask = nullptr;
+ static volatile int StopFlag = 0;
+ static volatile int Finished = 0;
+ 
++static void Dump_Task(FILE* f, struct Task* t, const char* where)
++{
++    unsigned char* b = (unsigned char*)t->tc_SPReg;
++    unsigned long pc = 0;
++    if (t->tc_State != TS_RUN) {
++        pc = ((unsigned long)b[62] << 24) | ((unsigned long)b[63] << 16) | ((unsigned long)b[64] << 8) | b[65];
++    }
++    std::fprintf(f, "%s '%s' pri %d state %d sigwait %08lx sigrecv %08lx pc %08lx sp %08lx\n", where, t->tc_Node.ln_Name ? t->tc_Node.ln_Name : "?", (int)t->tc_Node.ln_Pri, (int)t->tc_State, (unsigned long)t->tc_SigWait, (unsigned long)t->tc_SigRecvd, pc, (unsigned long)t->tc_SPReg);
++}
++
+ static void Write_Hang(unsigned beats)
+ {
+     FILE* f = std::fopen("RAM:cnc-hang.txt", "a");
+     if (!f) {
+         return;
+     }
++    std::fprintf(f, "HANG heartbeat %u stuck, main task:\n", beats);
+     Forbid();
++    Dump_Task(f, MainTask, "main");
++    Dump_Task(f, SysBase->ThisTask, "this");
++    for (struct Node* n = SysBase->TaskReady.lh_Head; n->ln_Succ; n = n->ln_Succ) {
++        Dump_Task(f, (struct Task*)n, "ready");
++    }
++    for (struct Node* n = SysBase->TaskWait.lh_Head; n->ln_Succ; n = n->ln_Succ) {
++        Dump_Task(f, (struct Task*)n, "wait");
++    }
+     unsigned long* sp = (unsigned long*)MainTask->tc_SPReg;
+-    unsigned char* b = (unsigned char*)sp;
+-    unsigned long pc = ((unsigned long)b[62] << 24) | ((unsigned long)b[63] << 16) | ((unsigned long)b[64] << 8) | b[65];
+     unsigned long words[48];
+     for (int i = 0; i < 48; i++) {
+         words[i] = sp[i];
+     }
+     Permit();
+-    std::fprintf(f, "HANG heartbeat %u stuck, saved PC %08lx\n", beats, pc);
+-    std::fprintf(f, "regs/stack words:");
++    std::fprintf(f, "main stack words:");
+     for (int i = 0; i < 48; i++) {
+         if ((i % 8) == 0) {
+             std::fprintf(f, "\n ");
+@@ -52,12 +70,11 @@ static void Watchdog_Main()
+     int stuck = 0;
+     bool reported = false;
+     while (!StopFlag) {
+-        Delay(100); // 2 s
++        Delay(50); // 1 s
+         unsigned now = Amiga_Heartbeat;
+         if (now == last) {
+-            if (++stuck >= 2 && !reported) {
++            if (++stuck >= 1 && stuck <= 4) {
+                 Write_Hang(now);
+-                reported = true;
+             }
+         } else {
+             stuck = 0;
+@@ -85,7 +102,7 @@ void Amiga_Start_Watchdog()
+                       NP_Name,
+                       (ULONG) "cnc-watchdog",
+                       NP_Priority,
+-                      5UL,
++                      30UL,
+                       NP_StackSize,
+                       16384UL,
+                       TAG_DONE);
+diff --git a/common/moviepaula_amiga.cpp b/common/moviepaula_amiga.cpp
+index 95e6079..c10cd05 100644
+--- a/common/moviepaula_amiga.cpp
++++ b/common/moviepaula_amiga.cpp
+@@ -151,7 +151,7 @@ bool MoviePaula_Open(int bits_per_sample, bool stereo, int rate)
+     SetSignal(0, SIGF_SINGLE);
+     StatSent = StatPlayed = StatEmpty = 0;
+     OpenResult = 0;
+-    Proc = CreateNewProcTags(NP_Entry, (ULONG)Task_Main, NP_Name, (ULONG) "cnc-movie-audio", NP_Priority, 10UL, NP_StackSize, 16384UL, TAG_DONE);
++    Proc = CreateNewProcTags(NP_Entry, (ULONG)Task_Main, NP_Name, (ULONG) "cnc-movie-audio", NP_Priority, 10UL, NP_StackSize, 65536UL, TAG_DONE);
+     if (!Proc) {
+         std::free(Fifo);
+         Fifo = nullptr;
+@@ -207,13 +207,6 @@ void MoviePaula_Close()
+         Delay(1);
+     }
+     Delay(5); // the task is still returning from its entry function
+-    {
+-        FILE* f = std::fopen("RAM:cnc-sound-log.txt", "a");
+-        if (f) {
+-            std::fprintf(f, "movie paula: open %d, written %u bytes, played %u bytes, %u buffers sent, %u empty, rate %u bits %d stereo %d, paula rate %u\n", OpenResult, FifoWr, StatPlayed, StatSent, StatEmpty, MRate, MBits, (int)MStereo, PaulaRate);
+-            std::fclose(f);
+-        }
+-    }
+     Proc = nullptr;
+     std::free(Fifo);
+     Fifo = nullptr;
+diff --git a/common/soundio_amiga.cpp b/common/soundio_amiga.cpp
+index 04e0ff5..d8c33b2 100644
+--- a/common/soundio_amiga.cpp
++++ b/common/soundio_amiga.cpp
+@@ -67,6 +67,9 @@ struct SampleTrackerTypeImp
+     unsigned FifoSize; // power of two
+     volatile unsigned FifoRd;
+     volatile unsigned FifoWr;
++    bool Starved; // the FIFO ran dry: silence until it holds a little data again
++    volatile int Expected; // frames that should have been played by now (movie clock), set by the game task
++    int Consumed;          // frames taken from the FIFO so far
+ };
+ 
+ static SampleTrackerTypeImp Trackers[MAX_TRACKERS];
+@@ -145,25 +148,54 @@ static void Mix_Segment(int* acc, const QBuf& b, unsigned& frac, unsigned step,
+ static void Mix_Fifo(int* acc, SampleTrackerTypeImp& t, int frames)
+ {
+     const unsigned fb = (unsigned)((t.Bits / 8) * (t.Stereo ? 2 : 1));
+-    const unsigned step = (unsigned)(((unsigned long)t.Rate << 16) / OUT_RATE);
++    unsigned step = (unsigned)(((unsigned long)t.Rate << 16) / OUT_RATE);
+     const unsigned mask = t.FifoSize - 1;
+     unsigned rd = t.FifoRd;
+     unsigned avail = (t.FifoWr - rd) / fb; // whole frames
++    // The movie clock is the timer. The sound output runs a little slower or faster than the timer, so the picture and
++    // the sound would drift apart in a long movie. The game task tells how many frames should have been played by now
++    // (Expected); the stream is played up to 8 % faster or slower to make up the difference (interpolated, no crackle).
++    // After running dry it waits until a little data has collected instead of stuttering with every chunk.
++    if (t.Starved) {
++        if (avail < (unsigned)(t.Rate / 10)) {
++            return; // silence, nothing consumed
++        }
++        t.Starved = false;
++    }
++    {
++        const long diff = (long)t.Expected - (long)t.Consumed; // > 0: the sound is late
++        long adj = diff * (long)step / (long)(t.Rate * 2);     // makes up the difference in about 2 s
++        const long lim = (long)step / 12;
++        if (adj > lim)
++            adj = lim;
++        else if (adj < -lim)
++            adj = -lim;
++        step = (unsigned)((long)step + adj);
++    }
+     unsigned frac = t.Frac;
+     for (int i = 0; i < frames; ++i) {
+         unsigned idx = frac >> 16;
+-        if (idx + 1 > avail) {
+-            break; // underrun
++        if (idx + 2 > avail) {
++            t.Starved = true;
++            break; // underrun (one more frame is needed for the interpolation)
+         }
+-        unsigned o = (rd + idx * fb) & mask;
+-        int l, r;
++        const unsigned o0 = (rd + idx * fb) & mask;
++        const unsigned o1 = (rd + (idx + 1) * fb) & mask;
++        const int w = (int)((frac >> 8) & 0xFF); // weight of the next frame, 0..255
++        int l0, r0, l1, r1;
+         if (t.Bits == 8) {
+-            l = ((int)t.Fifo[o] - 128) << 8;
+-            r = t.Stereo ? ((int)t.Fifo[(o + 1) & mask] - 128) << 8 : l;
++            l0 = ((int)t.Fifo[o0] - 128) << 8;
++            r0 = t.Stereo ? ((int)t.Fifo[(o0 + 1) & mask] - 128) << 8 : l0;
++            l1 = ((int)t.Fifo[o1] - 128) << 8;
++            r1 = t.Stereo ? ((int)t.Fifo[(o1 + 1) & mask] - 128) << 8 : l1;
+         } else {
+-            l = (short)((t.Fifo[o] << 8) | t.Fifo[(o + 1) & mask]); // big endian samples
+-            r = t.Stereo ? (short)((t.Fifo[(o + 2) & mask] << 8) | t.Fifo[(o + 3) & mask]) : l;
++            l0 = (short)((t.Fifo[o0] << 8) | t.Fifo[(o0 + 1) & mask]); // big endian samples
++            r0 = t.Stereo ? (short)((t.Fifo[(o0 + 2) & mask] << 8) | t.Fifo[(o0 + 3) & mask]) : l0;
++            l1 = (short)((t.Fifo[o1] << 8) | t.Fifo[(o1 + 1) & mask]);
++            r1 = t.Stereo ? (short)((t.Fifo[(o1 + 2) & mask] << 8) | t.Fifo[(o1 + 3) & mask]) : l1;
+         }
++        const int l = l0 + (((l1 - l0) * w) >> 8);
++        const int r = r0 + (((r1 - r0) * w) >> 8);
+         acc[2 * i] += (int)(((long)l * (long)t.Volume) >> 16);
+         acc[2 * i + 1] += (int)(((long)r * (long)t.Volume) >> 16);
+         frac += step;
+@@ -173,6 +205,7 @@ static void Mix_Fifo(int* acc, SampleTrackerTypeImp& t, int frames)
+         used = avail;
+     }
+     t.FifoRd = rd + used * fb;
++    t.Consumed += (int)used;
+     t.Frac = frac & 0xFFFF;
+ }
+ 
+@@ -650,7 +683,7 @@ bool SoundImp_Init(int bits_per_sample, bool stereo, int rate, bool reverse_chan
+                                 NP_Priority,
+                                 12UL,
+                                 NP_StackSize,
+-                                24576UL,
++                                65536UL,
+                                 TAG_DONE);
+     if (!MixProc) {
+         return false;
+@@ -709,7 +742,7 @@ SampleTrackerTypeImp* Amiga_Stream_Open(int bits_per_sample, bool stereo, int ra
+     for (int i = 0; i < MAX_TRACKERS; ++i) {
+         SampleTrackerTypeImp& t = Trackers[i];
+         if (!t.Used) {
+-            unsigned char* fifo = (unsigned char*)std::malloc(131072);
++            unsigned char* fifo = (unsigned char*)std::malloc(1048576);
+             if (!fifo) {
+                 return nullptr;
+             }
+@@ -721,7 +754,7 @@ SampleTrackerTypeImp* Amiga_Stream_Open(int bits_per_sample, bool stereo, int ra
+             t.Rate = (unsigned)rate;
+             t.Volume = 65536;
+             t.Fifo = fifo;
+-            t.FifoSize = 131072;
++            t.FifoSize = 1048576;
+             ReleaseSemaphore(&MixLock);
+             return &t;
+         }
+@@ -746,6 +779,11 @@ void Amiga_Stream_Write(SampleTrackerTypeImp* st, const void* data, unsigned len
+     st->FifoWr = wr + len;
+ }
+ 
++void Amiga_Stream_Expect(SampleTrackerTypeImp* st, int frames)
++{
++    st->Expected = frames;
++}
++
+ void Amiga_Stream_Play(SampleTrackerTypeImp* st, bool play)
+ {
+     st->Playing = play;
+diff --git a/common/vqaaudio_amiga.cpp b/common/vqaaudio_amiga.cpp
+index f2eff3c..c60f142 100644
+--- a/common/vqaaudio_amiga.cpp
++++ b/common/vqaaudio_amiga.cpp
+@@ -21,6 +21,7 @@ SampleTrackerTypeImp* Amiga_Stream_Open(int bits_per_sample, bool stereo, int ra
+ unsigned Amiga_Stream_Space(SampleTrackerTypeImp* st);
+ void Amiga_Stream_Write(SampleTrackerTypeImp* st, const void* data, unsigned len);
+ void Amiga_Stream_Play(SampleTrackerTypeImp* st, bool play);
++void Amiga_Stream_Expect(SampleTrackerTypeImp* st, int frames);
+ void Amiga_Stream_Close(SampleTrackerTypeImp* st);
+ bool MoviePaula_Open(int bits_per_sample, bool stereo, int rate);
+ unsigned MoviePaula_Space();
+@@ -40,6 +41,10 @@ static TimerClass timer;
+ static SampleTrackerTypeImp* Stream = nullptr; // stream tracker of the game mixer (game sound through Paula)
+ static bool ViaPaulaTask = false;              // or the Paula task of its own (game sound through AHI)
+ static bool Opened = false;
++static unsigned MovieRate = 22050;
++static bool ClkStarted = false;
++static unsigned ClkT0 = 0;
++static int MovieLag = 2048; // frames between the mixer and the speaker; PROGDIR:movielag overrides (tests)
+ 
+ static unsigned S_Space()
+ {
+@@ -65,7 +70,9 @@ static void S_Play(bool on)
+ }
+ 
+ // Create the sound output once the sound format of the movie is known; without it the movie is silent.
+-// Game sound through Paula: a stream tracker in the mixer. Through AHI: see below.
++// The movie sound follows the sound back end of the game: all through Paula or all through AHI (stream tracker of the
++// mixer). Tool type MOVIESOUND=OFF keeps the movies silent, MOVIESOUND=PAULA plays them through a Paula task of its
++// own beside the AHI game sound (a test option).
+ static void Open_Stream(VQAAudio* audio)
+ {
+     if (Opened || !Amiga_Sound_Active()) {
+@@ -74,9 +81,17 @@ static void Open_Stream(VQAAudio* audio)
+     if (audio->SampleRate <= 0 || (audio->BitsPerSample != 8 && audio->BitsPerSample != 16)) {
+         return;
+     }
+-    // The movie sound follows the sound back end of the game: all through Paula or all through AHI (stream tracker of
+-    // the mixer). Tool type MOVIESOUND=OFF keeps the movies silent, MOVIESOUND=PAULA plays them through a Paula task of
+-    // its own beside the AHI game sound (a test option).
++    MovieRate = (unsigned)audio->SampleRate;
++    {
++        FILE* lf = std::fopen("PROGDIR:movielag", "r"); // tests: output delay in frames (negative: picture ahead)
++        if (lf) {
++            int v = 0;
++            if (std::fscanf(lf, "%d", &v) == 1 && v >= -16384 && v <= 16384) {
++                MovieLag = v;
++            }
++            std::fclose(lf);
++        }
++    }
+     extern const char* Amiga_ToolType(const char*);
+     const char* t = Amiga_ToolType("MOVIESOUND");
+     int backend = Amiga_Sound_Backend();
+@@ -160,6 +175,7 @@ int VQA_StartAudio(VQAHandle* handle)
+     AudioVQAHandle = handle;
+     Open_Stream(audio);
+     if (Opened) {
++        ClkStarted = false;
+         S_Play(true);
+         audio->Flags |= VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
+         AudioFlags |= VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
+@@ -206,7 +222,9 @@ int VQA_CopyAudio(VQAHandle* handle)
+     }
+     if ((config->OptionFlags & 1) && audio->TempBuf != nullptr && audio->TempBufSize > 0) {
+         if (S_Space() < (unsigned)audio->TempBufSize) {
+-            return -10; // FIFO full: the loader tries again later (the mixer drains it on its own)
++            // FIFO full (the mixer corrects its speed to keep this rare): drop the data. Returning -10 (loader sleeps) crashed the machine in Red Alert movies
++            audio->TempBufSize = 0;
++            return 0;
+         }
+         S_Write(audio->TempBuf, (unsigned)audio->TempBufSize);
+         audio->TempBufSize = 0;
+@@ -219,9 +237,27 @@ void VQA_SetTimer(VQAHandle* handle, int time, int method)
+     timer.Set(0);
+ }
+ 
++// The movie clock is the timer, as in the original. With sound it is shifted by the sound output delay (the sound is
++// heard a little after it left the mixer): MovieLag frames, negative values let the picture run ahead.
+ unsigned VQA_GetTime(VQAHandle* handle)
+ {
+-    return timer.Time();
++    const unsigned t = timer.Time();
++    if (Opened && (AudioFlags & VQA_AUDIO_FLAG_AUDIO_DMA_TIMER)) {
++        if (!ViaPaulaTask && Stream) {
++            // tell the mixer where the sound should be now (it corrects its speed, see Mix_Fifo)
++            if (!ClkStarted) {
++                ClkStarted = true;
++                ClkT0 = t;
++            }
++            Amiga_Stream_Expect(Stream, (int)((t - ClkT0) * MovieRate / 60u) - MovieLag);
++        }
++        if (MovieLag >= 0) {
++            const unsigned lag = (unsigned)MovieLag * 60u / MovieRate;
++            return t > lag ? t - lag : 0;
++        }
++        return t + (unsigned)(-MovieLag) * 60u / MovieRate;
++    }
++    return t;
+ }
+ 
+ int VQA_TimerMethod()
+diff --git a/common/vqaloader.cpp b/common/vqaloader.cpp
+index 752619e..ecfb3f2 100644
+--- a/common/vqaloader.cpp
++++ b/common/vqaloader.cpp
+@@ -362,6 +362,15 @@ int VQA_Load_SND2(VQAHandle* handle, unsigned iffsize)
+ 
+     unsigned decomp_size = iffsize * (handle->VQABuf->Audio.BitsPerSample / 4);
+ 
++#ifdef __amigaos__
++    if (decomp_size > handle->VQABuf->Audio.TempBufLen) {
++        // does not fit: skip this chunk instead of writing outside the buffer
++        if (handle->StreamHandler(handle, VQACMD_SEEK, (void*)SEEK_CUR, size_aligned)) {
++            return VQAERR_SEEK;
++        }
++        return VQAERR_NONE;
++    }
++#endif
+     if (decomp_size <= handle->VQABuf->Audio.TempBufLen || handle->VQABuf->Audio.AudBufPos != 0) {
+         void* buffer = &audio->TempBuf[handle->VQABuf->Audio.TempBufLen - size_aligned];
+ 
+@@ -1382,7 +1391,14 @@ VQAData* VQA_AllocBuffers(VQAHeader* header, VQAConfig* config)
+                 data->MemUsed += audio->NumAudBlocks * 2;
+                 memset(audio->IsLoaded, 0, audio->NumAudBlocks * 2);
+                 audio->TempBufLen = 2 * (audio->BytesPerSecond / header->FPS) + 100;
+-                audio->TempBuf = (uint8_t*)malloc(2 * (audio->BytesPerSecond / header->FPS) + 100);
++#ifdef __amigaos__
++                // the Amiga sound path (vqaaudio_amiga.cpp) only reads TempBuf: it must hold the largest audio chunk of a
++                // movie (Red Alert has chunks of many frames, e.g. ALLY1), the ring buffer is never drained
++                if (audio->TempBufLen < 262144) {
++                    audio->TempBufLen = 262144;
++                }
++#endif
++                audio->TempBuf = (uint8_t*)malloc(audio->TempBufLen);
+ 
+                 if (audio->TempBuf == nullptr) {
+                     VQA_FreeBuffers(data, config, header);
+-- 
+2.45.2.windows.1
+

@@ -1,7 +1,7 @@
 From 0f92c53185ebda1085182c817133d4fd309d9324 Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Mon, 23 Nov 2026 12:18:36 +0100
-Subject: [PATCH 21/23] Amiga: movie sound through a Paula task (tool type
+Subject: [PATCH 21/24] Amiga: movie sound through a Paula task (tool type
  MOVIESOUND=PAULA|AHI), silent movies by default with AHI
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
