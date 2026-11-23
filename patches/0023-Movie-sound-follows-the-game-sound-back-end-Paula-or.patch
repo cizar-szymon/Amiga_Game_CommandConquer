@@ -1,0 +1,55 @@
+From ce550989332ace305c847af9d0aeff9670688a10 Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Mon, 23 Nov 2026 14:20:45 +0100
+Subject: [PATCH 23/23] Movie sound follows the game sound back end (Paula or
+ AHI), MOVIESOUND=OFF/PAULA options
+
+---
+ common/vqaaudio_amiga.cpp | 27 ++++++++++++---------------
+ 1 file changed, 12 insertions(+), 15 deletions(-)
+
+diff --git a/common/vqaaudio_amiga.cpp b/common/vqaaudio_amiga.cpp
+index e37deb6..f2eff3c 100644
+--- a/common/vqaaudio_amiga.cpp
++++ b/common/vqaaudio_amiga.cpp
+@@ -74,25 +74,22 @@ static void Open_Stream(VQAAudio* audio)
+     if (audio->SampleRate <= 0 || (audio->BitsPerSample != 8 && audio->BitsPerSample != 16)) {
+         return;
+     }
++    // The movie sound follows the sound back end of the game: all through Paula or all through AHI (stream tracker of
++    // the mixer). Tool type MOVIESOUND=OFF keeps the movies silent, MOVIESOUND=PAULA plays them through a Paula task of
++    // its own beside the AHI game sound (a test option).
++    extern const char* Amiga_ToolType(const char*);
++    const char* t = Amiga_ToolType("MOVIESOUND");
+     int backend = Amiga_Sound_Backend();
+-    if (backend == 1) {
++    if (t && (t[0] == 'O' || t[0] == 'o')) {
++        return;
++    }
++    if (backend == 2 && t && (t[0] == 'P' || t[0] == 'p')) {
++        Opened = MoviePaula_Open(audio->BitsPerSample, audio->Channels > 1, audio->SampleRate);
++        ViaPaulaTask = Opened;
++    } else if (backend == 1 || backend == 2) {
+         Stream = Amiga_Stream_Open(audio->BitsPerSample, audio->Channels > 1, audio->SampleRate);
+         Opened = Stream != nullptr;
+         ViaPaulaTask = false;
+-    } else if (backend == 2) {
+-        // Game sound through AHI: the movies are silent by default. Movie sound mixed into AHI froze Amiga 2 (see
+-        // docs/PORTING.md); through a Paula task of its own it plays but was not audible on Amiga 2 (Paula output not
+-        // connected there). Tool type MOVIESOUND=PAULA (or MOVIESOUND=AHI, for tests) switches it on.
+-        extern const char* Amiga_ToolType(const char*);
+-        const char* t = Amiga_ToolType("MOVIESOUND");
+-        if (t && (t[0] == 'P' || t[0] == 'p')) {
+-            Opened = MoviePaula_Open(audio->BitsPerSample, audio->Channels > 1, audio->SampleRate);
+-            ViaPaulaTask = Opened;
+-        } else if (t && (t[0] == 'A' || t[0] == 'a')) {
+-            Stream = Amiga_Stream_Open(audio->BitsPerSample, audio->Channels > 1, audio->SampleRate);
+-            Opened = Stream != nullptr;
+-            ViaPaulaTask = false;
+-        }
+     }
+ }
+ 
+-- 
+2.45.2.windows.1
+

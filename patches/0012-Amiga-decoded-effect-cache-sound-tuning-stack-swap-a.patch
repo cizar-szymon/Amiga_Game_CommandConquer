@@ -1,7 +1,7 @@
 From 753f1f1a994ed787f83fdd52c10c76797a3db21a Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Sun, 22 Nov 2026 23:38:56 +0100
-Subject: [PATCH 12/22] Amiga: decoded effect cache, sound tuning, stack swap
+Subject: [PATCH 12/23] Amiga: decoded effect cache, sound tuning, stack swap
  and version tag, default paths
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
