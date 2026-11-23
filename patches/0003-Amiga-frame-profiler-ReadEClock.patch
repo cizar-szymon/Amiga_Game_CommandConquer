@@ -1,7 +1,7 @@
 From 12450e059c6fb11eb5579ec7ef742a6fa78f0dcd Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Sun, 22 Nov 2026 19:04:10 +0100
-Subject: [PATCH 03/25] Amiga: frame profiler (ReadEClock)
+Subject: [PATCH 03/26] Amiga: frame profiler (ReadEClock)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 ---

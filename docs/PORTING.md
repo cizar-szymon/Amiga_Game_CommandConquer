@@ -220,6 +220,8 @@ Pitfalls found on the way (keep for the next time):
 - The Red Alert watchdog (`amiga_watchdog.cpp`, priority 30) writes all tasks (name, priority, state, signals, saved PC) to `RAM:cnc-hang.txt` when the heartbeat stops (it also fires during movies, harmless).
 - WinUAE reproduces the Red Alert hang (A1200 config of the project) and needs no reset of the real machine; `HALT1` in its status bar means the CPU stopped.
 
+- **End of a movie**: the next screen (menu) needs seconds to load here, and the front surface is sent to the card only when the engine polls events. The last picture of the movie stayed on the screen and showed in the colors of the next palette. `Play_Movie` (TD and RA) now always clears the screen (`clrscrn = true`) and calls `Amiga_Render_Now()` (video_amiga.cpp) so that the black screen is shown at once.
+
 Tool types: `MOVIES=OFF` / `PROGDIR:nomovies` skip the movies, `MOVIESOUND=OFF` keeps them silent, `MOVIESOUND=PAULA` plays them through a Paula task of its own beside AHI game sound (`moviepaula_amiga.cpp`, a test option, uses the same direct Paula output).
 
 Release 0.1 is not affected (its docs say movies are skipped; the next release has to change that text, `data_ReadMe.txt`, and mention `MOVIESOUND`).

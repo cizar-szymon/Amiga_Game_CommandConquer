@@ -1,0 +1,87 @@
+From f64d417ffc93a9af626b99dcb018bf2f035e4905 Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Mon, 23 Nov 2026 20:10:29 +0100
+Subject: [PATCH 26/26] Clear and show the screen at the end of a movie (menu
+ load takes seconds)
+
+---
+ common/video_amiga.cpp   | 9 +++++++++
+ redalert/conquer.cpp     | 9 +++++++++
+ tiberiandawn/conquer.cpp | 9 +++++++++
+ 3 files changed, 27 insertions(+)
+
+diff --git a/common/video_amiga.cpp b/common/video_amiga.cpp
+index a02fb24..2edcec5 100644
+--- a/common/video_amiga.cpp
++++ b/common/video_amiga.cpp
+@@ -578,6 +578,15 @@ private:
+     unsigned char* Present;
+ };
+ 
++// Send the front surface to the screen now (the engine does it only when it polls events; a long load without polls
++// would leave the old picture on the screen under the new palette).
++void Amiga_Render_Now()
++{
++    if (frontSurface) {
++        frontSurface->RenderSurface();
++    }
++}
++
+ static void* WatchObj = nullptr;
+ static void* WatchVptr = nullptr;
+ static unsigned FrameNo = 0;
+diff --git a/redalert/conquer.cpp b/redalert/conquer.cpp
+index 00735aa..9fbea51 100644
+--- a/redalert/conquer.cpp
++++ b/redalert/conquer.cpp
+@@ -2526,12 +2526,21 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn, bool immediate)
+         **	being in an unknown condition. Recover from this by clearing the screen and
+         **	forcing the palette to black.
+         */
++#ifdef __amigaos__
++        // The next screen needs seconds to load here: do not leave the last picture of the movie on the screen
++        // (it would show in the colors of the next palette); the PC has no gap and does not notice.
++        clrscrn = true;
++#endif
+         if (clrscrn) {
+             VisiblePage.Clear();
+             BlackPalette.Adjust(0x08, WhitePalette);
+             BlackPalette.Set();
+             BlackPalette.Adjust(0xFF);
+             BlackPalette.Set();
++#ifdef __amigaos__
++            extern void Amiga_Render_Now();
++            Amiga_Render_Now(); // show the cleared screen at once, the next load takes seconds
++#endif
+         }
+         Show_Mouse();
+     }
+diff --git a/tiberiandawn/conquer.cpp b/tiberiandawn/conquer.cpp
+index da9b5a0..64c9c2c 100644
+--- a/tiberiandawn/conquer.cpp
++++ b/tiberiandawn/conquer.cpp
+@@ -2301,12 +2301,21 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn)
+         **	being in an unknown condition. Recover from this by clearing the screen and
+         **	forcing the palette to black.
+         */
++#ifdef __amigaos__
++        // The next screen needs seconds to load here: do not leave the last picture of the movie on the screen
++        // (it would show in the colors of the next palette); the PC has no gap and does not notice.
++        clrscrn = true;
++#endif
+         if (clrscrn) {
+             VisiblePage.Clear();
+             memset(BlackPalette, 0x01, 768);
+             Set_Palette(BlackPalette);
+             memset(BlackPalette, 0x00, 768);
+             Set_Palette(BlackPalette);
++#ifdef __amigaos__
++            extern void Amiga_Render_Now();
++            Amiga_Render_Now(); // show the cleared screen at once, the next load takes seconds
++#endif
+         }
+         Show_Mouse();
+     }
+-- 
+2.45.2.windows.1
+
