@@ -1,0 +1,326 @@
+From a32ac13783d02da10a7a2240d17482751b4a8bce Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Mon, 23 Nov 2026 02:49:05 +0100
+Subject: [PATCH 19/19] Amiga: VQA movie sound (work in progress, not built)
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ common/soundio_amiga.cpp  |   6 +
+ common/vqaaudio_amiga.cpp | 288 ++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 294 insertions(+)
+ create mode 100644 common/vqaaudio_amiga.cpp
+
+diff --git a/common/soundio_amiga.cpp b/common/soundio_amiga.cpp
+index 3906883..5816fbe 100644
+--- a/common/soundio_amiga.cpp
++++ b/common/soundio_amiga.cpp
+@@ -715,6 +715,12 @@ void SoundImp_Shutdown()
+     }
+ }
+ 
++// True when a mixer back end (Paula or AHI) is running: the VQA movie sound is only started then.
++bool Amiga_Sound_Active()
++{
++    return Ready == 1 && Backend != MODE_OFF && !ShutDown;
++}
++
+ SampleTrackerTypeImp* SoundImp_Init_Sample(int bits_per_sample, bool stereo, int rate)
+ {
+     for (int i = 0; i < MAX_TRACKERS; ++i) {
+diff --git a/common/vqaaudio_amiga.cpp b/common/vqaaudio_amiga.cpp
+new file mode 100644
+index 0000000..aa52945
+--- /dev/null
++++ b/common/vqaaudio_amiga.cpp
+@@ -0,0 +1,288 @@
++// WORK IN PROGRESS, NOT BUILT (CMakeLists.txt uses vqaaudio_null.cpp): with this file and the sound mode "dump" the Amiga hung
++// (game and AmiAgent unresponsive, 23.11.2026); the cause is not found. See docs/PORTING.md, "Movie sound".
++// VQA movie sound for AmigaOS: the audio blocks of a movie go to one tracker of the software mixer
++// (soundio_amiga.cpp, Paula or AHI). The logic of the block ring (Buffer / IsLoaded / PlayPosition) follows
++// vqaaudio_openal.cpp, OpenAL itself is not used. The movie clock stays the timer (as in vqaaudio_null.cpp):
++// without a sound backend the functions do nothing and the movie runs silent.
++#include "vqaaudio.h"
++#include "audio.h"
++#include "vqafile.h"
++#include "vqaloader.h"
++#include "vqatask.h"
++#include "timer.h"
++#include <algorithm>
++#include <cstring>
++#include <cstdio>
++#include <cstdarg>
++
++static void VDbg(const char* fmt, ...)
++{
++    static int n = 0;
++    if (n > 400) {
++        return;
++    }
++    ++n;
++    FILE* f = fopen("PROGDIR:vqa.log", "a");
++    if (f) {
++        va_list ap;
++        va_start(ap, fmt);
++        vfprintf(f, fmt, ap);
++        va_end(ap);
++        fclose(f);
++    }
++}
++
++struct SampleTrackerTypeImp;
++bool Amiga_Sound_Active();
++SampleTrackerTypeImp* SoundImp_Init_Sample(int bits_per_sample, bool stereo, int rate);
++void SoundImp_Shutdown_Sample(SampleTrackerTypeImp* st);
++void SoundImp_Buffer_Sample_Data(SampleTrackerTypeImp* st, const void* data, size_t datalen);
++int SoundImp_Get_Sample_Free_Buffer_Count(SampleTrackerTypeImp* st);
++void SoundImp_Start_Sample(SampleTrackerTypeImp* st);
++void SoundImp_Stop_Sample(SampleTrackerTypeImp* st);
++void SoundImp_Set_Sample_Volume(SampleTrackerTypeImp* st, unsigned int volume);
++
++int AudioFlags;
++int TimerIntCount;
++int TimerMethod;
++int VQATickCount;
++int TickOffset;
++unsigned VQAAudioPaused;
++VQAHandle* AudioVQAHandle;
++
++static TimerClass timer;
++static SampleTrackerTypeImp* Stream = nullptr;
++static bool StreamPaused = false;
++
++// Hand the next block of the ring to the mixer; false when the loader has not filled it yet.
++static bool Queue_Audio()
++{
++    VQAConfig* config = &AudioVQAHandle->Config;
++    VQAData* data = AudioVQAHandle->VQABuf;
++    VQAAudio* audio = &data->Audio;
++
++    SoundImp_Buffer_Sample_Data(Stream, &audio->Buffer[audio->PlayPosition], config->HMIBufSize);
++    audio->field_B8 = audio->field_B0;
++    audio->field_B0 += config->HMIBufSize;
++    if (audio->field_B0 >= audio->BuffBytes) {
++        audio->field_B0 = 0;
++    }
++
++    audio->field_14 = audio->field_10 + 1;
++    if (audio->field_14 >= audio->NumAudBlocks) {
++        audio->field_14 = 0;
++    }
++
++    if (audio->IsLoaded[audio->field_14] != 1) {
++        if (VQAMovieDone) {
++            ++audio->field_B4;
++        }
++        ++audio->NumSkipped;
++        config->DrawFlags &= 0xFB;
++        return false;
++    }
++
++    audio->IsLoaded[audio->field_10] = 0;
++    audio->PlayPosition += config->HMIBufSize;
++    ++audio->field_10;
++    if (audio->PlayPosition >= config->AudioBufSize) {
++        audio->PlayPosition = 0;
++        audio->field_10 = 0;
++    }
++    ++audio->field_B4;
++    return true;
++}
++
++static void VQA_AudioCallback()
++{
++    if (Stream && !StreamPaused && AudioVQAHandle) {
++        while (SoundImp_Get_Sample_Free_Buffer_Count(Stream) > 0) {
++            if (!Queue_Audio()) {
++                break;
++            }
++        }
++    }
++}
++
++int VQA_StartTimerInt(VQAHandle* handle, int a2)
++{
++    return 0;
++}
++
++void VQA_StopTimerInt(VQAHandle* handle)
++{
++}
++
++int VQA_OpenAudio(VQAHandle* handle, void* hwnd)
++{
++    VQAConfig* config = &handle->Config;
++    VQAData* data = handle->VQABuf;
++    VQAHeader* header = &handle->Header;
++    VQAAudio* audio = &data->Audio;
++
++    audio->field_10 = 0;
++    audio->field_BC = 1;
++    if (config->AudioRate == -1) {
++        int rate = 0;
++        if (header->FPS == config->FrameRate) {
++            rate = audio->SampleRate;
++        } else {
++            rate = config->FrameRate * audio->SampleRate / header->FPS;
++        }
++        config->AudioRate = rate;
++    }
++    audio->field_C0 = 1;
++    if (audio->field_BC) {
++        audio->field_BC = 0;
++    }
++    audio->Flags |= VQA_AUDIO_FLAG_UNKNOWN001;
++    AudioFlags |= VQA_AUDIO_FLAG_UNKNOWN001;
++    return 0;
++}
++
++void VQA_CloseAudio(VQAHandle* handle)
++{
++    VQAData* data = handle->VQABuf;
++    VQAAudio* audio = &data->Audio;
++    VQA_StopAudio(handle);
++    audio->Flags &= ~(VQA_AUDIO_FLAG_UNKNOWN001 | VQA_AUDIO_FLAG_UNKNOWN002);
++    AudioFlags &= ~(VQA_AUDIO_FLAG_UNKNOWN001 | VQA_AUDIO_FLAG_UNKNOWN002);
++}
++
++int VQA_StartAudio(VQAHandle* handle)
++{
++    VQAConfig* config = &handle->Config;
++    VQAData* data = handle->VQABuf;
++    VQAAudio* audio = &data->Audio;
++
++    AudioVQAHandle = handle;
++    if (Stream) {
++        return 0;
++    }
++    if (!Amiga_Sound_Active()) {
++        return 0; // sound off: silent movie
++    }
++    if (audio->SampleRate <= 0 || (audio->BitsPerSample != 8 && audio->BitsPerSample != 16)
++        || config->HMIBufSize > 16384 || config->HMIBufSize <= 0) {
++        return 0; // unsupported: silent, like the null back end
++    }
++    VDbg("StartAudio rate %d bits %d ch %d hmibuf %d numblocks %u
++", (int)audio->SampleRate, (int)audio->BitsPerSample, (int)audio->Channels, (int)config->HMIBufSize, (unsigned)audio->NumAudBlocks);
++    Stream = SoundImp_Init_Sample(audio->BitsPerSample, audio->Channels > 1, audio->SampleRate);
++    VDbg("Stream %p
++", (void*)Stream);
++    if (!Stream) {
++        return 0; // no sound back end (or no free tracker)
++    }
++    StreamPaused = false;
++    SoundImp_Set_Sample_Volume(Stream, 65536);
++    audio->BuffBytes = config->HMIBufSize * 4;
++    audio->field_B0 = 0;
++    audio->field_B4 = 0;
++    VQA_AudioCallback(); // prefill the queue
++    VDbg("prefilled
++");
++    SoundImp_Start_Sample(Stream);
++    audio->Flags |= VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
++    AudioFlags |= VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
++    return 0;
++}
++
++void VQA_StopAudio(VQAHandle* handle)
++{
++    VQAData* data = handle->VQABuf;
++    VQAAudio* audio = &data->Audio;
++    if (Stream) {
++        SoundImp_Stop_Sample(Stream);
++        SoundImp_Shutdown_Sample(Stream);
++        Stream = nullptr;
++        audio->Flags &= ~VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
++        AudioFlags &= ~VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
++    }
++    AudioVQAHandle = nullptr;
++}
++
++void VQA_PauseAudio()
++{
++    timer.Stop();
++    if (Stream && !StreamPaused) {
++        StreamPaused = true;
++        SoundImp_Stop_Sample(Stream);
++    }
++}
++
++void VQA_ResumeAudio()
++{
++    timer.Start();
++    if (Stream && StreamPaused) {
++        StreamPaused = false;
++        SoundImp_Start_Sample(Stream);
++    }
++}
++
++int VQA_CopyAudio(VQAHandle* handle)
++{
++    VQAConfig* config = &handle->Config;
++    VQAData* data = handle->VQABuf;
++    VQAAudio* audio = &data->Audio;
++
++    if (!Stream) {
++        return 0; // silent movie
++    }
++
++    VDbg("CopyAudio pos %d tmp %d
++", (int)audio->AudBufPos, (int)audio->TempBufSize);
++    VQA_AudioCallback();
++
++    if (config->OptionFlags & 1) {
++        if (audio->Buffer != nullptr) {
++            if (audio->TempBufSize > 0) {
++                int current_block = audio->AudBufPos / config->HMIBufSize;
++                int next_block = (audio->TempBufSize + audio->AudBufPos) / config->HMIBufSize;
++                if ((unsigned)next_block >= audio->NumAudBlocks) {
++                    next_block -= audio->NumAudBlocks;
++                }
++                if (audio->IsLoaded[next_block] == 1) {
++                    return -10;
++                }
++                if (next_block < current_block) {
++                    int end_space = config->AudioBufSize - audio->AudBufPos;
++                    int remaining = audio->TempBufSize - end_space;
++                    memcpy(&audio->Buffer[audio->AudBufPos], audio->TempBuf, end_space);
++                    memcpy(audio->Buffer, &audio->TempBuf[end_space], remaining);
++                    audio->AudBufPos = remaining;
++                    audio->TempBufSize = 0;
++                    for (unsigned i = current_block; i < audio->NumAudBlocks; ++i) {
++                        audio->IsLoaded[i] = 1;
++                    }
++                    for (int i = 0; i < next_block; ++i) {
++                        audio->IsLoaded[i] = 1;
++                    }
++                } else {
++                    memcpy(&audio->Buffer[audio->AudBufPos], audio->TempBuf, audio->TempBufSize);
++                    audio->AudBufPos += audio->TempBufSize;
++                    audio->TempBufSize = 0;
++                    for (int i = current_block; i < next_block; ++i) {
++                        audio->IsLoaded[i] = 1;
++                    }
++                }
++            }
++        }
++    }
++    return 0;
++}
++
++void VQA_SetTimer(VQAHandle* handle, int time, int method)
++{
++    timer.Set(0);
++}
++
++unsigned VQA_GetTime(VQAHandle* handle)
++{
++    return timer.Time();
++}
++
++int VQA_TimerMethod()
++{
++    return 0;
++}
+-- 
+2.45.2.windows.1
+

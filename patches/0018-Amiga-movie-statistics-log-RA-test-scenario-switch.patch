@@ -1,7 +1,7 @@
 From 68516268dd97438941eca386191651ed1dc3e76d Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Mon, 23 Nov 2026 02:15:13 +0100
-Subject: [PATCH 18/18] Amiga: movie statistics log, RA test scenario switch
+Subject: [PATCH 18/19] Amiga: movie statistics log, RA test scenario switch
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 ---
