@@ -1,0 +1,8 @@
+wait 60
+click 320 182
+wait 100
+click 500 252
+wait 200
+dump
+wait 50
+quit

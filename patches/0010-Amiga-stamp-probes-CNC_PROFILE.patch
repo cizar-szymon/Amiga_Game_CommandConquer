@@ -1,7 +1,7 @@
 From 3e6f90c513f2fbfe7ce041e6ea637dfb0455f115 Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Sun, 22 Nov 2026 21:55:13 +0100
-Subject: [PATCH 10/17] Amiga: stamp probes (CNC_PROFILE)
+Subject: [PATCH 10/18] Amiga: stamp probes (CNC_PROFILE)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 ---

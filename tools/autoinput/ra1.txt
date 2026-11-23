@@ -1,0 +1,6 @@
+wait 60
+click 320 182
+wait 200
+dump
+wait 60
+quit

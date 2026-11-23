@@ -1,0 +1,8 @@
+wait 800
+click 320 58
+wait 100
+click 500 242
+wait 100
+click 150 230
+wait 30000
+quit

@@ -1,0 +1,123 @@
+From 68516268dd97438941eca386191651ed1dc3e76d Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Mon, 23 Nov 2026 02:15:13 +0100
+Subject: [PATCH 18/18] Amiga: movie statistics log, RA test scenario switch
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ common/video_amiga.cpp   | 16 ++++++++++++++++
+ redalert/conquer.cpp     | 11 +++++++++++
+ redalert/init.cpp        | 18 ++++++++++++++++++
+ tiberiandawn/conquer.cpp | 11 +++++++++++
+ 4 files changed, 56 insertions(+)
+
+diff --git a/common/video_amiga.cpp b/common/video_amiga.cpp
+index e218013..79f3297 100644
+--- a/common/video_amiga.cpp
++++ b/common/video_amiga.cpp
+@@ -597,6 +597,22 @@ int Amiga_Test_Scenario()
+     return n;
+ }
+ 
++// Test switch for Red Alert: PROGDIR:scenario holds a scenario file name (e.g. SCG10EA.INI) to start instead of mission 1
++const char* Amiga_Test_Scenario_Name()
++{
++    static char name[32];
++    FILE* f = std::fopen("PROGDIR:scenario", "r");
++    if (!f) {
++        return nullptr;
++    }
++    name[0] = 0;
++    if (std::fscanf(f, "%31s", name) != 1) {
++        name[0] = 0;
++    }
++    std::fclose(f);
++    return (name[0] == 'S' && name[1] == 'C') ? name : nullptr;
++}
++
+ bool Amiga_No_Movies()
+ {
+     static int cached = -1;
+diff --git a/redalert/conquer.cpp b/redalert/conquer.cpp
+index d0f6d93..00735aa 100644
+--- a/redalert/conquer.cpp
++++ b/redalert/conquer.cpp
+@@ -2474,6 +2474,17 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn, bool immediate)
+                 SysMemPage.Clear();
+                 InMovie = true;
+                 VQA_Play(vqa, VQAMODE_RUN);
++#ifdef __amigaos__
++                {
++                    VQAStatistics vst;
++                    VQA_GetStats(vqa, &vst);
++                    FILE* mf = fopen("RAM:cnc-log.txt", "a");
++                    if (mf) {
++                        fprintf(mf, "movie %s: %d frames at %d fps, drawn %d skipped %d, time %ld\n", name, (int)vqa->Header.Frames, (int)vqa->Header.FPS, (int)vst.FramesDrawn, (int)vst.FramesSkipped, (long)(vst.EndTime - vst.StartTime));
++                        fclose(mf);
++                    }
++                }
++#endif
+                 VQA_Close(vqa);
+                 // Resume_Audio_Thread();
+                 InMovie = false;
+diff --git a/redalert/init.cpp b/redalert/init.cpp
+index b6b00d7..d5fc725 100644
+--- a/redalert/init.cpp
++++ b/redalert/init.cpp
+@@ -706,6 +706,15 @@ bool Select_Game(bool fade)
+ #endif
+                 Theme.Fade_Out();
+                 Theme.Queue_Song(THEME_FIRST);
++#ifdef __amigaos__
++                {
++                    extern const char* Amiga_Test_Scenario_Name();
++                    const char* tn = Amiga_Test_Scenario_Name();
++                    if (tn) {
++                        Scen.Set_Scenario_Name(tn); // test switch: file PROGDIR:scenario
++                    }
++                }
++#endif
+                 Session.Type = GAME_NORMAL;
+                 process = false;
+                 break;
+@@ -801,6 +810,15 @@ bool Select_Game(bool fade)
+                     }
+                 }
+ 
++#ifdef __amigaos__
++                {
++                    extern const char* Amiga_Test_Scenario_Name();
++                    const char* tn = Amiga_Test_Scenario_Name();
++                    if (tn) {
++                        Scen.Set_Scenario_Name(tn); // test switch: file PROGDIR:scenario
++                    }
++                }
++#endif
+                 Session.Type = GAME_NORMAL;
+                 process = false;
+                 break;
+diff --git a/tiberiandawn/conquer.cpp b/tiberiandawn/conquer.cpp
+index 2f549ec..da9b5a0 100644
+--- a/tiberiandawn/conquer.cpp
++++ b/tiberiandawn/conquer.cpp
+@@ -2265,6 +2265,17 @@ void Play_Movie(char const* name, ThemeType theme, bool clrscrn)
+                 SysMemPage.Clear();
+                 InMovie = true;
+                 VQA_Play(vqa, VQAMODE_RUN);
++#ifdef __amigaos__
++                {
++                    VQAStatistics vst;
++                    VQA_GetStats(vqa, &vst);
++                    FILE* mf = fopen("RAM:cnc-log.txt", "a");
++                    if (mf) {
++                        fprintf(mf, "movie %s: %d frames at %d fps, drawn %d skipped %d, time %ld\n", name, (int)vqa->Header.Frames, (int)vqa->Header.FPS, (int)vst.FramesDrawn, (int)vst.FramesSkipped, (long)(vst.EndTime - vst.StartTime));
++                        fclose(mf);
++                    }
++                }
++#endif
+                 VQA_Close(vqa);
+                 // Resume_Audio_Thread();
+                 InMovie = false;
+-- 
+2.45.2.windows.1
+
