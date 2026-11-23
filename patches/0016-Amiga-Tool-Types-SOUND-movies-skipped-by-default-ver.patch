@@ -1,7 +1,7 @@
 From 6b128453dd32c8015a072cba28cff824688bf47a Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Mon, 23 Nov 2026 00:58:54 +0100
-Subject: [PATCH 16/19] Amiga: Tool Types (SOUND=), movies skipped by default,
+Subject: [PATCH 16/20] Amiga: Tool Types (SOUND=), movies skipped by default,
  version tag, keyframe fix
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>

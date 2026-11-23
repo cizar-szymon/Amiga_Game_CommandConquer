@@ -1,7 +1,7 @@
 From df81dc8ed98a06e97e6b2beb14979609f58daeda Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Sun, 22 Nov 2026 20:15:42 +0100
-Subject: [PATCH 06/19] Amiga: present via locked bitmap + MOVE16, present
+Subject: [PATCH 06/20] Amiga: present via locked bitmap + MOVE16, present
  straight from HidPage (no Blit_Display copy)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>

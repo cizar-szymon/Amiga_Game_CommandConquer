@@ -1,0 +1,630 @@
+From 95647b4e24a4843d4528b3fd9007a5f63c2b760c Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Mon, 23 Nov 2026 11:05:13 +0100
+Subject: [PATCH 20/20] Amiga: VQA movie sound through a stream tracker (FIFO)
+ in the mixer; movies on by default; AHI ring of 4 sounds
+
+- vqaaudio_amiga.cpp: the loader's audio data goes into a byte FIFO of a stream tracker drained by the mixer task
+  (no block hand-over between the tasks; the OpenAL style ring deadlocked here). Played through Paula only: with AHI
+  (warp.audio, Amiga 2) the machine froze after seconds to a minute of movie sound, cause not found, so with AHI the
+  movies stay silent unless PROGDIR:vqaahi exists.
+- soundio_amiga.cpp: AHI output as a ring of 4 sounds like Settlers (was 2); stream tracker API; Amiga_Sound_Backend.
+- video_amiga.cpp: movies play by default, PROGDIR:nomovies or tool type MOVIES=OFF skips them.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ common/CMakeLists.txt     |   2 +-
+ common/soundio_amiga.cpp  | 175 ++++++++++++++++++++++++++++-----
+ common/video_amiga.cpp    |   9 +-
+ common/vqaaudio_amiga.cpp | 201 ++++++++++----------------------------
+ 4 files changed, 206 insertions(+), 181 deletions(-)
+
+diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
+index d320845..f19d53a 100644
+--- a/common/CMakeLists.txt
++++ b/common/CMakeLists.txt
+@@ -134,7 +134,7 @@ set(COMMONV_SRC
+ )
+ 
+ if(AMIGA)
+-    list(APPEND COMMONV_SRC soundio_common.cpp soundio_amiga.cpp vqaaudio_null.cpp)
++    list(APPEND COMMONV_SRC soundio_common.cpp soundio_amiga.cpp vqaaudio_amiga.cpp)
+ elseif(DSOUND)
+     list(APPEND COMMONV_SRC soundio.cpp vqaaudio_dsound.cpp)
+     list(APPEND VANILLA_LIBS dsound)
+diff --git a/common/soundio_amiga.cpp b/common/soundio_amiga.cpp
+index 5816fbe..fcf8664 100644
+--- a/common/soundio_amiga.cpp
++++ b/common/soundio_amiga.cpp
+@@ -62,6 +62,11 @@ struct SampleTrackerTypeImp
+     unsigned Volume; // 65536 = full
+     bool Playing;
+     bool Used;
++    // stream tracker (movie sound): a byte FIFO the game task fills and the mixer drains, no buffer hand-over between the tasks
++    unsigned char* Fifo;
++    unsigned FifoSize; // power of two
++    volatile unsigned FifoRd;
++    volatile unsigned FifoWr;
+ };
+ 
+ static SampleTrackerTypeImp Trackers[MAX_TRACKERS];
+@@ -136,8 +141,47 @@ static void Mix_Segment(int* acc, const QBuf& b, unsigned& frac, unsigned step,
+     frac = f;
+ }
+ 
++// Stream tracker: the frames are taken from the FIFO; without enough data the rest of the block stays silent.
++static void Mix_Fifo(int* acc, SampleTrackerTypeImp& t, int frames)
++{
++    const unsigned fb = (unsigned)((t.Bits / 8) * (t.Stereo ? 2 : 1));
++    const unsigned step = (unsigned)(((unsigned long)t.Rate << 16) / OUT_RATE);
++    const unsigned mask = t.FifoSize - 1;
++    unsigned rd = t.FifoRd;
++    unsigned avail = (t.FifoWr - rd) / fb; // whole frames
++    unsigned frac = t.Frac;
++    for (int i = 0; i < frames; ++i) {
++        unsigned idx = frac >> 16;
++        if (idx + 1 > avail) {
++            break; // underrun
++        }
++        unsigned o = (rd + idx * fb) & mask;
++        int l, r;
++        if (t.Bits == 8) {
++            l = ((int)t.Fifo[o] - 128) << 8;
++            r = t.Stereo ? ((int)t.Fifo[(o + 1) & mask] - 128) << 8 : l;
++        } else {
++            l = (short)((t.Fifo[o] << 8) | t.Fifo[(o + 1) & mask]); // big endian samples
++            r = t.Stereo ? (short)((t.Fifo[(o + 2) & mask] << 8) | t.Fifo[(o + 3) & mask]) : l;
++        }
++        acc[2 * i] += (int)(((long)l * (long)t.Volume) >> 16);
++        acc[2 * i + 1] += (int)(((long)r * (long)t.Volume) >> 16);
++        frac += step;
++    }
++    unsigned used = frac >> 16;
++    if (used > avail) {
++        used = avail;
++    }
++    t.FifoRd = rd + used * fb;
++    t.Frac = frac & 0xFFFF;
++}
++
+ static void Mix_Tracker(int* acc, SampleTrackerTypeImp& t, int frames)
+ {
++    if (t.Fifo) {
++        Mix_Fifo(acc, t, frames);
++        return;
++    }
+     int done = 0;
+     while (done < frames && t.Count > 0) {
+         QBuf& b = t.Q[t.Head];
+@@ -185,7 +229,7 @@ static void Mix_Output()
+     if (!Paused) {
+         for (int i = 0; i < MAX_TRACKERS; ++i) {
+             SampleTrackerTypeImp& t = Trackers[i];
+-            if (t.Used && t.Playing && t.Count > 0) {
++            if (t.Used && t.Playing && (t.Count > 0 || t.Fifo)) {
+                 Mix_Tracker(MixBlock, t, Blk);
+             }
+         }
+@@ -341,21 +385,21 @@ static void Paula_Service()
+ static struct MsgPort* AhiPort = nullptr;
+ static struct AHIRequest* AhiIO = nullptr;
+ static struct AHIAudioCtrl* Actrl = nullptr;
+-static short* AhiBuf[2] = {nullptr, nullptr};
++#define AHI_RING 4 // sounds in the ring (like Settlers): the one playing, the queued one and two being filled
++static short* AhiBuf[AHI_RING] = {nullptr, nullptr, nullptr, nullptr};
+ static BYTE AhiSig = -1;
+-static volatile UWORD AhiQueued = 1;
+-static volatile UWORD AhiToFill = 0;
+-static volatile unsigned AhiSwaps = 0;
+-static unsigned AhiHandled = 0;
++static volatile UWORD AhiPos = AHI_RING - 1; // the sound playing
++static volatile unsigned AhiSwaps = 0;     // sounds started
++static unsigned AhiFilled = 0;             // sounds filled so far
+ 
+ // The hook is entered by AHI with a0 = hook, a2 = audio control, a1 = message.
+ extern "C" ULONG cnc_ahi_sound_func(struct Hook* hook, struct AHIAudioCtrl* ac, struct AHISoundMessage* msg)
+ {
+     (void)hook;
+     (void)msg;
+-    AhiQueued ^= 1;
+-    AHI_SetSound(0, AhiQueued, 0, 0, ac, 0);
+-    AhiToFill = AhiQueued;
++    UWORD pos = (UWORD)((AhiPos + 1) % AHI_RING);
++    AhiPos = pos;
++    AHI_SetSound(0, (UWORD)((pos + 1) % AHI_RING), 0, 0, ac, 0);
+     ++AhiSwaps;
+     Signal(MixTask, 1UL << AhiSig);
+     return 0;
+@@ -396,10 +440,10 @@ static bool Ahi_Open()
+     AHIBase = (struct Library*)AhiIO->ahir_Std.io_Device;
+ 
+     AhiSig = AllocSignal(-1);
+-    for (int i = 0; i < 2; ++i) {
++    for (int i = 0; i < AHI_RING; ++i) {
+         AhiBuf[i] = (short*)AllocVec(BLK_MAX * 2 * sizeof(short), MEMF_PUBLIC | MEMF_CLEAR);
+     }
+-    if (AhiSig < 0 || !AhiBuf[0] || !AhiBuf[1]) {
++    if (AhiSig < 0 || !AhiBuf[0] || !AhiBuf[1] || !AhiBuf[2] || !AhiBuf[3]) {
+         return false;
+     }
+     AhiHook.h_Entry = (ULONG (*)())(void*)cnc_ahi_hook_entry;
+@@ -411,14 +455,14 @@ static bool Ahi_Open()
+                            AHIA_Channels,
+                            1,
+                            AHIA_Sounds,
+-                           2,
++                           AHI_RING,
+                            AHIA_SoundFunc,
+                            (ULONG)&AhiHook,
+                            TAG_DONE);
+     if (!Actrl) {
+         return false;
+     }
+-    for (int i = 0; i < 2; ++i) {
++    for (int i = 0; i < AHI_RING; ++i) {
+         struct AHISampleInfo info;
+         info.ahisi_Type = AHIST_S16S;
+         info.ahisi_Address = AhiBuf[i];
+@@ -427,15 +471,17 @@ static bool Ahi_Open()
+             return false;
+         }
+     }
+-    // fill both buffers before playing
++    // the first two sounds now, the third when the first one starts (the sound function also comes for sound 0)
+     for (int i = 0; i < 2; ++i) {
+         Mix_Output();
+         std::memcpy(AhiBuf[i], OutBlock, sizeof(short) * 2 * Blk);
+     }
++    AhiFilled = 2;
++    AhiPos = AHI_RING - 1;
++    AhiSwaps = 0;
+     if (AHI_ControlAudio(Actrl, AHIC_Play, TRUE, TAG_DONE) != AHIE_OK) {
+         return false;
+     }
+-    AhiQueued = 1; // the hook flips it to 0 when sound 0 starts
+     AHI_Play(Actrl,
+              AHIP_BeginChannel,
+              0,
+@@ -469,7 +515,7 @@ static void Ahi_Close()
+         DeleteMsgPort(AhiPort);
+         AhiPort = nullptr;
+     }
+-    for (int i = 0; i < 2; ++i) {
++    for (int i = 0; i < AHI_RING; ++i) {
+         if (AhiBuf[i]) {
+             FreeVec(AhiBuf[i]);
+             AhiBuf[i] = nullptr;
+@@ -483,18 +529,20 @@ static void Ahi_Close()
+ 
+ static void Ahi_Service()
+ {
+-    if (AhiSwaps != AhiHandled) {
+-        if (AhiSwaps - AhiHandled > 1) {
+-            ++StatUnderruns; // a buffer played before it was refilled
+-            if (StatUnderruns <= 12 || (StatUnderruns % 20) == 0) {
+-                char m[256];
+-                std::snprintf(m, sizeof(m), "ahi miss #%u at %ld s: %u swaps behind", StatUnderruns, (long)(std::time(nullptr) - StatStart), (unsigned)(AhiSwaps - AhiHandled));
+-                Log(m);
+-            }
++    // sound k playing since the k+1-th start: filled up to k + 2 (the one after the queued one), catching up if a signal was missed
++    unsigned want = AhiSwaps + 2;
++    if (want > AhiFilled + 1) {
++        ++StatUnderruns;
++        if (StatUnderruns <= 12 || (StatUnderruns % 20) == 0) {
++            char m[256];
++            std::snprintf(m, sizeof(m), "ahi miss #%u at %ld s: %u behind", StatUnderruns, (long)(std::time(nullptr) - StatStart), want - AhiFilled);
++            Log(m);
+         }
+-        AhiHandled = AhiSwaps;
++    }
++    while (AhiFilled < want) {
+         Mix_Output();
+-        std::memcpy(AhiBuf[AhiToFill], OutBlock, sizeof(short) * 2 * Blk);
++        std::memcpy(AhiBuf[AhiFilled % AHI_RING], OutBlock, sizeof(short) * 2 * Blk);
++        ++AhiFilled;
+     }
+ }
+ 
+@@ -712,15 +760,90 @@ void SoundImp_Shutdown()
+                 Trackers[i].Q[q].Data = nullptr;
+             }
+         }
++        if (Trackers[i].Fifo) {
++            std::free(Trackers[i].Fifo);
++            Trackers[i].Fifo = nullptr;
++        }
+     }
+ }
+ 
++// 1 Paula, 2 AHI, 3 dump, 0 none
++int Amiga_Sound_Backend()
++{
++    return (Ready == 1 && !ShutDown) ? (int)Backend : 0;
++}
++
+ // True when a mixer back end (Paula or AHI) is running: the VQA movie sound is only started then.
+ bool Amiga_Sound_Active()
+ {
+     return Ready == 1 && Backend != MODE_OFF && !ShutDown;
+ }
+ 
++// ---- stream tracker for the movie sound (vqaaudio_amiga.cpp): the game task writes the audio data, the mixer plays it
++
++SampleTrackerTypeImp* Amiga_Stream_Open(int bits_per_sample, bool stereo, int rate)
++{
++    for (int i = 0; i < MAX_TRACKERS; ++i) {
++        SampleTrackerTypeImp& t = Trackers[i];
++        if (!t.Used) {
++            unsigned char* fifo = (unsigned char*)std::malloc(131072);
++            if (!fifo) {
++                return nullptr;
++            }
++            ObtainSemaphore(&MixLock);
++            std::memset(&t, 0, sizeof(t));
++            t.Used = true;
++            t.Bits = bits_per_sample;
++            t.Stereo = stereo;
++            t.Rate = (unsigned)rate;
++            t.Volume = 65536;
++            t.Fifo = fifo;
++            t.FifoSize = 131072;
++            ReleaseSemaphore(&MixLock);
++            return &t;
++        }
++    }
++    return nullptr;
++}
++
++// Free room in bytes.
++unsigned Amiga_Stream_Space(SampleTrackerTypeImp* st)
++{
++    return st->FifoSize - (st->FifoWr - st->FifoRd);
++}
++
++// Append data (the caller checked the room).
++void Amiga_Stream_Write(SampleTrackerTypeImp* st, const void* data, unsigned len)
++{
++    const unsigned char* d = (const unsigned char*)data;
++    unsigned wr = st->FifoWr;
++    for (unsigned i = 0; i < len; ++i) {
++        st->Fifo[(wr + i) & (st->FifoSize - 1)] = d[i];
++    }
++    st->FifoWr = wr + len;
++}
++
++void Amiga_Stream_Play(SampleTrackerTypeImp* st, bool play)
++{
++    st->Playing = play;
++}
++
++void Amiga_Stream_Close(SampleTrackerTypeImp* st)
++{
++    if (!st) {
++        return;
++    }
++    ObtainSemaphore(&MixLock);
++    st->Playing = false;
++    st->Used = false;
++    unsigned char* f = st->Fifo;
++    st->Fifo = nullptr;
++    ReleaseSemaphore(&MixLock);
++    if (f) {
++        std::free(f);
++    }
++}
++
+ SampleTrackerTypeImp* SoundImp_Init_Sample(int bits_per_sample, bool stereo, int rate)
+ {
+     for (int i = 0; i < MAX_TRACKERS; ++i) {
+diff --git a/common/video_amiga.cpp b/common/video_amiga.cpp
+index 79f3297..a02fb24 100644
+--- a/common/video_amiga.cpp
++++ b/common/video_amiga.cpp
+@@ -617,10 +617,13 @@ bool Amiga_No_Movies()
+ {
+     static int cached = -1;
+     if (cached < 0) {
+-        // no FMV player yet: movies are skipped unless the file PROGDIR:movies exists
+-        FILE* f = std::fopen("PROGDIR:movies", "r");
+-        cached = f ? 0 : 1;
++        // movies play when MOVIES.MIX is in the data path; PROGDIR:nomovies or the tool type MOVIES=OFF skips them
++        extern const char* Amiga_ToolType(const char*);
++        const char* t = Amiga_ToolType("MOVIES");
++        cached = (t && (t[0] == 'O' || t[0] == 'o') && (t[1] == 'F' || t[1] == 'f')) ? 1 : 0;
++        FILE* f = std::fopen("PROGDIR:nomovies", "r");
+         if (f) {
++            cached = 1;
+             std::fclose(f);
+         }
+     }
+diff --git a/common/vqaaudio_amiga.cpp b/common/vqaaudio_amiga.cpp
+index aa52945..b7018c6 100644
+--- a/common/vqaaudio_amiga.cpp
++++ b/common/vqaaudio_amiga.cpp
+@@ -1,9 +1,9 @@
+-// WORK IN PROGRESS, NOT BUILT (CMakeLists.txt uses vqaaudio_null.cpp): with this file and the sound mode "dump" the Amiga hung
+-// (game and AmiAgent unresponsive, 23.11.2026); the cause is not found. See docs/PORTING.md, "Movie sound".
+-// VQA movie sound for AmigaOS: the audio blocks of a movie go to one tracker of the software mixer
+-// (soundio_amiga.cpp, Paula or AHI). The logic of the block ring (Buffer / IsLoaded / PlayPosition) follows
+-// vqaaudio_openal.cpp, OpenAL itself is not used. The movie clock stays the timer (as in vqaaudio_null.cpp):
+-// without a sound backend the functions do nothing and the movie runs silent.
++// VQA movie sound for AmigaOS. The audio data the loader decodes (TempBuf) is appended to a byte FIFO of a stream
++// tracker of the software mixer (soundio_amiga.cpp, Paula or AHI); the mixer task drains it by itself, so the game task
++// and the mixer share no buffer hand-over (the block ring of vqaaudio_openal.cpp, with its IsLoaded flags and the
++// callbacks, deadlocked here: the loader sleeps while the ring is full and only a call from the loader frees it).
++// The movie clock stays the timer (as in vqaaudio_null.cpp). Without a sound back end the functions do nothing and the
++// movie runs silent.
+ #include "vqaaudio.h"
+ #include "audio.h"
+ #include "vqafile.h"
+@@ -13,34 +13,15 @@
+ #include <algorithm>
+ #include <cstring>
+ #include <cstdio>
+-#include <cstdarg>
+-
+-static void VDbg(const char* fmt, ...)
+-{
+-    static int n = 0;
+-    if (n > 400) {
+-        return;
+-    }
+-    ++n;
+-    FILE* f = fopen("PROGDIR:vqa.log", "a");
+-    if (f) {
+-        va_list ap;
+-        va_start(ap, fmt);
+-        vfprintf(f, fmt, ap);
+-        va_end(ap);
+-        fclose(f);
+-    }
+-}
+ 
+ struct SampleTrackerTypeImp;
+ bool Amiga_Sound_Active();
+-SampleTrackerTypeImp* SoundImp_Init_Sample(int bits_per_sample, bool stereo, int rate);
+-void SoundImp_Shutdown_Sample(SampleTrackerTypeImp* st);
+-void SoundImp_Buffer_Sample_Data(SampleTrackerTypeImp* st, const void* data, size_t datalen);
+-int SoundImp_Get_Sample_Free_Buffer_Count(SampleTrackerTypeImp* st);
+-void SoundImp_Start_Sample(SampleTrackerTypeImp* st);
+-void SoundImp_Stop_Sample(SampleTrackerTypeImp* st);
+-void SoundImp_Set_Sample_Volume(SampleTrackerTypeImp* st, unsigned int volume);
++int Amiga_Sound_Backend();
++SampleTrackerTypeImp* Amiga_Stream_Open(int bits_per_sample, bool stereo, int rate);
++unsigned Amiga_Stream_Space(SampleTrackerTypeImp* st);
++void Amiga_Stream_Write(SampleTrackerTypeImp* st, const void* data, unsigned len);
++void Amiga_Stream_Play(SampleTrackerTypeImp* st, bool play);
++void Amiga_Stream_Close(SampleTrackerTypeImp* st);
+ 
+ int AudioFlags;
+ int TimerIntCount;
+@@ -52,56 +33,27 @@ VQAHandle* AudioVQAHandle;
+ 
+ static TimerClass timer;
+ static SampleTrackerTypeImp* Stream = nullptr;
+-static bool StreamPaused = false;
+ 
+-// Hand the next block of the ring to the mixer; false when the loader has not filled it yet.
+-static bool Queue_Audio()
++// Create the stream tracker once the sound format of the movie is known; false = silent movie.
++static void Open_Stream(VQAAudio* audio)
+ {
+-    VQAConfig* config = &AudioVQAHandle->Config;
+-    VQAData* data = AudioVQAHandle->VQABuf;
+-    VQAAudio* audio = &data->Audio;
+-
+-    SoundImp_Buffer_Sample_Data(Stream, &audio->Buffer[audio->PlayPosition], config->HMIBufSize);
+-    audio->field_B8 = audio->field_B0;
+-    audio->field_B0 += config->HMIBufSize;
+-    if (audio->field_B0 >= audio->BuffBytes) {
+-        audio->field_B0 = 0;
+-    }
+-
+-    audio->field_14 = audio->field_10 + 1;
+-    if (audio->field_14 >= audio->NumAudBlocks) {
+-        audio->field_14 = 0;
++    if (Stream || !Amiga_Sound_Active()) {
++        return;
+     }
+-
+-    if (audio->IsLoaded[audio->field_14] != 1) {
+-        if (VQAMovieDone) {
+-            ++audio->field_B4;
++    // Movie sound is played through Paula only. With AHI (warp.audio on the Warp cards) the machine froze after a few
++    // seconds to a minute of movie sound (Amiga 2, 23.11.2026; the same movie without sound runs for hours), cause not
++    // found: with AHI the movies are silent, unless the file PROGDIR:vqaahi exists (for tests).
++    if (Amiga_Sound_Backend() == 2) {
++        FILE* f = fopen("PROGDIR:vqaahi", "r");
++        if (!f) {
++            return;
+         }
+-        ++audio->NumSkipped;
+-        config->DrawFlags &= 0xFB;
+-        return false;
+-    }
+-
+-    audio->IsLoaded[audio->field_10] = 0;
+-    audio->PlayPosition += config->HMIBufSize;
+-    ++audio->field_10;
+-    if (audio->PlayPosition >= config->AudioBufSize) {
+-        audio->PlayPosition = 0;
+-        audio->field_10 = 0;
++        fclose(f);
+     }
+-    ++audio->field_B4;
+-    return true;
+-}
+-
+-static void VQA_AudioCallback()
+-{
+-    if (Stream && !StreamPaused && AudioVQAHandle) {
+-        while (SoundImp_Get_Sample_Free_Buffer_Count(Stream) > 0) {
+-            if (!Queue_Audio()) {
+-                break;
+-            }
+-        }
++    if (audio->SampleRate <= 0 || (audio->BitsPerSample != 8 && audio->BitsPerSample != 16)) {
++        return;
+     }
++    Stream = Amiga_Stream_Open(audio->BitsPerSample, audio->Channels > 1, audio->SampleRate);
+ }
+ 
+ int VQA_StartTimerInt(VQAHandle* handle, int a2)
+@@ -137,6 +89,9 @@ int VQA_OpenAudio(VQAHandle* handle, void* hwnd)
+     }
+     audio->Flags |= VQA_AUDIO_FLAG_UNKNOWN001;
+     AudioFlags |= VQA_AUDIO_FLAG_UNKNOWN001;
++
++    // the stream exists from now on: the audio of the frames the loader reads before the start is kept
++    Open_Stream(audio);
+     return 0;
+ }
+ 
+@@ -145,78 +100,55 @@ void VQA_CloseAudio(VQAHandle* handle)
+     VQAData* data = handle->VQABuf;
+     VQAAudio* audio = &data->Audio;
+     VQA_StopAudio(handle);
++    if (Stream) {
++        Amiga_Stream_Close(Stream);
++        Stream = nullptr;
++    }
++    AudioVQAHandle = nullptr;
+     audio->Flags &= ~(VQA_AUDIO_FLAG_UNKNOWN001 | VQA_AUDIO_FLAG_UNKNOWN002);
+     AudioFlags &= ~(VQA_AUDIO_FLAG_UNKNOWN001 | VQA_AUDIO_FLAG_UNKNOWN002);
+ }
+ 
+ int VQA_StartAudio(VQAHandle* handle)
+ {
+-    VQAConfig* config = &handle->Config;
+     VQAData* data = handle->VQABuf;
+     VQAAudio* audio = &data->Audio;
+ 
+     AudioVQAHandle = handle;
++    Open_Stream(audio);
+     if (Stream) {
+-        return 0;
++        Amiga_Stream_Play(Stream, true);
++        audio->Flags |= VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
++        AudioFlags |= VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
+     }
+-    if (!Amiga_Sound_Active()) {
+-        return 0; // sound off: silent movie
+-    }
+-    if (audio->SampleRate <= 0 || (audio->BitsPerSample != 8 && audio->BitsPerSample != 16)
+-        || config->HMIBufSize > 16384 || config->HMIBufSize <= 0) {
+-        return 0; // unsupported: silent, like the null back end
+-    }
+-    VDbg("StartAudio rate %d bits %d ch %d hmibuf %d numblocks %u
+-", (int)audio->SampleRate, (int)audio->BitsPerSample, (int)audio->Channels, (int)config->HMIBufSize, (unsigned)audio->NumAudBlocks);
+-    Stream = SoundImp_Init_Sample(audio->BitsPerSample, audio->Channels > 1, audio->SampleRate);
+-    VDbg("Stream %p
+-", (void*)Stream);
+-    if (!Stream) {
+-        return 0; // no sound back end (or no free tracker)
+-    }
+-    StreamPaused = false;
+-    SoundImp_Set_Sample_Volume(Stream, 65536);
+-    audio->BuffBytes = config->HMIBufSize * 4;
+-    audio->field_B0 = 0;
+-    audio->field_B4 = 0;
+-    VQA_AudioCallback(); // prefill the queue
+-    VDbg("prefilled
+-");
+-    SoundImp_Start_Sample(Stream);
+-    audio->Flags |= VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
+-    AudioFlags |= VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
+     return 0;
+ }
+ 
++// Stops the playing; the data in the FIFO stays for a restart (pause), CloseAudio frees the stream.
+ void VQA_StopAudio(VQAHandle* handle)
+ {
+     VQAData* data = handle->VQABuf;
+     VQAAudio* audio = &data->Audio;
+     if (Stream) {
+-        SoundImp_Stop_Sample(Stream);
+-        SoundImp_Shutdown_Sample(Stream);
+-        Stream = nullptr;
++        Amiga_Stream_Play(Stream, false);
+         audio->Flags &= ~VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
+         AudioFlags &= ~VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
+     }
+-    AudioVQAHandle = nullptr;
+ }
+ 
+ void VQA_PauseAudio()
+ {
+     timer.Stop();
+-    if (Stream && !StreamPaused) {
+-        StreamPaused = true;
+-        SoundImp_Stop_Sample(Stream);
++    if (Stream) {
++        Amiga_Stream_Play(Stream, false);
+     }
+ }
+ 
+ void VQA_ResumeAudio()
+ {
+     timer.Start();
+-    if (Stream && StreamPaused) {
+-        StreamPaused = false;
+-        SoundImp_Start_Sample(Stream);
++    if (Stream && (AudioFlags & VQA_AUDIO_FLAG_AUDIO_DMA_TIMER)) {
++        Amiga_Stream_Play(Stream, true);
+     }
+ }
+ 
+@@ -229,45 +161,12 @@ int VQA_CopyAudio(VQAHandle* handle)
+     if (!Stream) {
+         return 0; // silent movie
+     }
+-
+-    VDbg("CopyAudio pos %d tmp %d
+-", (int)audio->AudBufPos, (int)audio->TempBufSize);
+-    VQA_AudioCallback();
+-
+-    if (config->OptionFlags & 1) {
+-        if (audio->Buffer != nullptr) {
+-            if (audio->TempBufSize > 0) {
+-                int current_block = audio->AudBufPos / config->HMIBufSize;
+-                int next_block = (audio->TempBufSize + audio->AudBufPos) / config->HMIBufSize;
+-                if ((unsigned)next_block >= audio->NumAudBlocks) {
+-                    next_block -= audio->NumAudBlocks;
+-                }
+-                if (audio->IsLoaded[next_block] == 1) {
+-                    return -10;
+-                }
+-                if (next_block < current_block) {
+-                    int end_space = config->AudioBufSize - audio->AudBufPos;
+-                    int remaining = audio->TempBufSize - end_space;
+-                    memcpy(&audio->Buffer[audio->AudBufPos], audio->TempBuf, end_space);
+-                    memcpy(audio->Buffer, &audio->TempBuf[end_space], remaining);
+-                    audio->AudBufPos = remaining;
+-                    audio->TempBufSize = 0;
+-                    for (unsigned i = current_block; i < audio->NumAudBlocks; ++i) {
+-                        audio->IsLoaded[i] = 1;
+-                    }
+-                    for (int i = 0; i < next_block; ++i) {
+-                        audio->IsLoaded[i] = 1;
+-                    }
+-                } else {
+-                    memcpy(&audio->Buffer[audio->AudBufPos], audio->TempBuf, audio->TempBufSize);
+-                    audio->AudBufPos += audio->TempBufSize;
+-                    audio->TempBufSize = 0;
+-                    for (int i = current_block; i < next_block; ++i) {
+-                        audio->IsLoaded[i] = 1;
+-                    }
+-                }
+-            }
++    if ((config->OptionFlags & 1) && audio->TempBuf != nullptr && audio->TempBufSize > 0) {
++        if (Amiga_Stream_Space(Stream) < (unsigned)audio->TempBufSize) {
++            return -10; // FIFO full: the loader tries again later (the mixer drains it on its own)
+         }
++        Amiga_Stream_Write(Stream, audio->TempBuf, (unsigned)audio->TempBufSize);
++        audio->TempBufSize = 0;
+     }
+     return 0;
+ }
+-- 
+2.45.2.windows.1
+
