@@ -1,7 +1,7 @@
 From 28f1dcfc320cf414dd030f620b8a070b0fdeaa32 Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Mon, 23 Nov 2026 01:23:13 +0100
-Subject: [PATCH 17/21] Amiga: Red Alert build (egos macros, startup, movies,
+Subject: [PATCH 17/22] Amiga: Red Alert build (egos macros, startup, movies,
  data label)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>

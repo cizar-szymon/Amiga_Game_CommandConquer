@@ -1,0 +1,595 @@
+From 2b60ae121fd7b3501c5e41e41bbc9f48b53596f0 Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Mon, 23 Nov 2026 14:08:08 +0100
+Subject: [PATCH 22/22] Paula output with direct hardware access (audio.device
+ is silent on Amiga 2); movie Paula task uses it
+
+---
+ common/CMakeLists.txt       |   2 +-
+ common/moviepaula_amiga.cpp | 128 +++++-------------------
+ common/paulahw_amiga.cpp    | 190 ++++++++++++++++++++++++++++++++++++
+ common/soundio_amiga.cpp    | 143 +++++++--------------------
+ 4 files changed, 246 insertions(+), 217 deletions(-)
+ create mode 100644 common/paulahw_amiga.cpp
+
+diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
+index 4b5cc5e..3f9a8b6 100644
+--- a/common/CMakeLists.txt
++++ b/common/CMakeLists.txt
+@@ -134,7 +134,7 @@ set(COMMONV_SRC
+ )
+ 
+ if(AMIGA)
+-    list(APPEND COMMONV_SRC soundio_common.cpp soundio_amiga.cpp vqaaudio_amiga.cpp moviepaula_amiga.cpp)
++    list(APPEND COMMONV_SRC soundio_common.cpp soundio_amiga.cpp vqaaudio_amiga.cpp moviepaula_amiga.cpp paulahw_amiga.cpp)
+ elseif(DSOUND)
+     list(APPEND COMMONV_SRC soundio.cpp vqaaudio_dsound.cpp)
+     list(APPEND VANILLA_LIBS dsound)
+diff --git a/common/moviepaula_amiga.cpp b/common/moviepaula_amiga.cpp
+index 9423157..95e6079 100644
+--- a/common/moviepaula_amiga.cpp
++++ b/common/moviepaula_amiga.cpp
+@@ -18,7 +18,6 @@
+ extern struct ExecBase* SysBase;
+ 
+ #define MP_FIFO 131072
+-#define MP_BUFS 3
+ #define MP_FRAMES 768
+ 
+ static unsigned char* Fifo = nullptr;
+@@ -34,30 +33,21 @@ static int MBits = 16;
+ static bool MStereo = false;
+ static unsigned MRate = 22050;
+ 
+-static struct MsgPort* Port = nullptr;
+-static struct IOAudio* Alloc = nullptr;
+-static struct IOAudio* IO[MP_BUFS][2];
+-static signed char* Buf[MP_BUFS][2];
+-static unsigned char Busy[MP_BUFS];
++bool PaulaHw_Open(unsigned frames, unsigned period);
++signed char* PaulaHw_Buf(int side, int idx);
++void PaulaHw_Start();
++int PaulaHw_Poll();
++void PaulaHw_Commit(int idx);
++unsigned long PaulaHw_Wait(unsigned long sigs);
++void PaulaHw_Close();
++
+ static unsigned PaulaRate = 22030;
+ static unsigned Frac = 0;
+ static unsigned StatSent = 0, StatPlayed = 0, StatEmpty = 0;
+ static int OpenResult = 0;
+ 
+-static void Send(int b)
+-{
+-    for (int c = 0; c < 2; ++c) {
+-        IO[b][c]->ioa_Request.io_Command = CMD_WRITE;
+-        IO[b][c]->ioa_Request.io_Flags = ADIOF_PERVOL;
+-        IO[b][c]->ioa_Length = MP_FRAMES;
+-        SendIO((struct IORequest*)IO[b][c]);
+-    }
+-    Busy[b] = 2;
+-    ++StatSent;
+-}
+-
+ // Fill one buffer pair from the FIFO (silence when nothing is playing or the FIFO is empty).
+-static void Fill_And_Send(int b)
++static void Fill(int b)
+ {
+     const unsigned fb = (unsigned)((MBits / 8) * (MStereo ? 2 : 1));
+     const unsigned mask = MP_FIFO - 1;
+@@ -80,8 +70,8 @@ static void Fill_And_Send(int b)
+             }
+             frac += step;
+         }
+-        Buf[b][0][i] = l;
+-        Buf[b][1][i] = r;
++        PaulaHw_Buf(0, b)[i] = l;
++        PaulaHw_Buf(1, b)[i] = r;
+     }
+     if (play && avail == 0) {
+         ++StatEmpty;
+@@ -95,109 +85,35 @@ static void Fill_And_Send(int b)
+         FifoRd = rd + used * fb;
+         Frac = frac & 0xFFFF;
+     }
+-    Send(b);
++    ++StatSent;
+ }
+ 
+ static void Task_Main()
+ {
+-    static UBYTE channels[] = {3, 5, 10, 12};
+     const ULONG clock = (SysBase->VBlankFrequency == 50) ? 3546895UL : 3579545UL;
+-    bool ok = false;
+-
+     QuitSig = AllocSignal(-1);
+-    Port = CreateMsgPort();
+-    if (Port && QuitSig >= 0) {
+-        Alloc = (struct IOAudio*)CreateIORequest(Port, sizeof(struct IOAudio));
+-    }
+-    if (Alloc) {
+-        Alloc->ioa_Request.io_Message.mn_Node.ln_Pri = 1;
+-        Alloc->ioa_Request.io_Flags = ADIOF_NOWAIT;
+-        Alloc->ioa_Data = channels;
+-        Alloc->ioa_Length = sizeof(channels);
+-        if (OpenDevice((CONST_STRPTR)AUDIONAME, 0, (struct IORequest*)Alloc, 0) == 0) {
+-            ok = true;
+-        } else {
+-            DeleteIORequest((struct IORequest*)Alloc);
+-            Alloc = nullptr;
+-        }
+-    }
+     const UWORD period = (UWORD)((clock + 22050 - 1) / 22050);
+     PaulaRate = clock / period;
++    bool ok = QuitSig >= 0 && PaulaHw_Open(MP_FRAMES, period);
+     if (ok) {
+-        ULONG units = (ULONG)Alloc->ioa_Request.io_Unit;
+-        for (int b = 0; b < MP_BUFS && ok; ++b) {
+-            for (int c = 0; c < 2; ++c) {
+-                Buf[b][c] = (signed char*)AllocMem(MP_FRAMES, MEMF_CHIP | MEMF_CLEAR);
+-                struct IOAudio* io = (struct IOAudio*)AllocMem(sizeof(struct IOAudio), MEMF_PUBLIC);
+-                if (!Buf[b][c] || !io) {
+-                    ok = false;
+-                    break;
+-                }
+-                *io = *Alloc;
+-                io->ioa_Request.io_Unit = (struct Unit*)(units & (c ? 0x06 : 0x09));
+-                io->ioa_Data = (UBYTE*)Buf[b][c];
+-                io->ioa_Period = period;
+-                io->ioa_Volume = 64;
+-                io->ioa_Cycles = 1;
+-                IO[b][c] = io;
+-            }
+-        }
+-    }
+-    if (ok) {
+-        for (int b = 0; b < MP_BUFS; ++b) {
+-            Fill_And_Send(b);
+-        }
++        Fill(0);
++        PaulaHw_Start();
+     }
+     Ready = ok ? 1 : -1;
+     Signal(ParentTask, SIGF_SINGLE);
+ 
+     while (ok && !Quit) {
+-        ULONG sigs = Wait((1UL << Port->mp_SigBit) | (1UL << QuitSig));
+-        if (sigs & (1UL << QuitSig)) {
++        if (PaulaHw_Wait(1UL << QuitSig)) {
+             break;
+         }
+-        struct IOAudio* io;
+-        while ((io = (struct IOAudio*)GetMsg(Port)) != nullptr) {
+-            for (int b = 0; b < MP_BUFS; ++b) {
+-                for (int c = 0; c < 2; ++c) {
+-                    if (IO[b][c] == io && Busy[b]) {
+-                        --Busy[b];
+-                    }
+-                }
+-            }
+-        }
+-        for (int b = 0; b < MP_BUFS; ++b) {
+-            if (!Busy[b]) {
+-                Fill_And_Send(b);
+-            }
++        int idx = PaulaHw_Poll();
++        if (idx >= 0) {
++            Fill(idx);
++            PaulaHw_Commit(idx);
+         }
+     }
+-
+-    for (int b = 0; b < MP_BUFS; ++b) {
+-        for (int c = 0; c < 2; ++c) {
+-            if (IO[b][c]) {
+-                if (Busy[b]) {
+-                    AbortIO((struct IORequest*)IO[b][c]);
+-                    WaitIO((struct IORequest*)IO[b][c]);
+-                }
+-                FreeMem(IO[b][c], sizeof(struct IOAudio));
+-                IO[b][c] = nullptr;
+-            }
+-            if (Buf[b][c]) {
+-                FreeMem(Buf[b][c], MP_FRAMES);
+-                Buf[b][c] = nullptr;
+-            }
+-        }
+-        Busy[b] = 0;
+-    }
+-    if (Alloc) {
+-        CloseDevice((struct IORequest*)Alloc);
+-        DeleteIORequest((struct IORequest*)Alloc);
+-        Alloc = nullptr;
+-    }
+-    if (Port) {
+-        DeleteMsgPort(Port);
+-        Port = nullptr;
++    if (ok) {
++        PaulaHw_Close();
+     }
+     if (QuitSig >= 0) {
+         FreeSignal(QuitSig);
+diff --git a/common/paulahw_amiga.cpp b/common/paulahw_amiga.cpp
+new file mode 100644
+index 0000000..9f61dbe
+--- /dev/null
++++ b/common/paulahw_amiga.cpp
+@@ -0,0 +1,190 @@
++// Paula output with direct access to the audio hardware, shared by the game mixer (soundio_amiga.cpp) and the movie
++// sound task (moviepaula_amiga.cpp). audio.device plays nothing audible on Amiga 2 (A4000 + Warp 7060, 23.11.2026) while
++// the hardware itself is fine (HippoPlayer), so the channels are only locked through audio.device (priority 127, as
++// players do) and then driven directly: one left and one right channel, two 8 bit buffers per channel in Chip RAM that
++// Paula plays in turn. The end of a buffer sets the audio interrupt flag in INTREQR (read by polling, the interrupt
++// itself stays off): then the next buffer is already playing, the one that has just finished is refilled and its
++// address written to AUDxLC, from where Paula takes it at the end of the buffer now playing.
++#include <exec/types.h>
++#include <exec/memory.h>
++#include <exec/execbase.h>
++#include <devices/audio.h>
++#include <devices/timer.h>
++#include <proto/exec.h>
++
++extern struct ExecBase* SysBase;
++
++static struct MsgPort* AudPort = nullptr;
++static struct IOAudio* AudIO = nullptr;
++static struct MsgPort* TimPort = nullptr;
++static struct timerequest* TimReq = nullptr;
++static bool TimOpen = false;
++static signed char* Buf[2][2]; // [side][index]
++static unsigned Frames = 0;
++static int LCh = 0, RCh = 1;
++static UWORD Period = 0;
++static unsigned Events = 0;
++static bool Running = false;
++
++#define CUSTOM ((volatile UWORD*)0xDFF000)
++#define CH_LC(ch) ((volatile ULONG*)(0xDFF0A0 + (ch)*0x10))
++#define CH_LEN(ch) (CUSTOM[(0xA4 + (ch)*0x10) / 2])
++#define CH_PER(ch) (CUSTOM[(0xA6 + (ch)*0x10) / 2])
++#define CH_VOL(ch) (CUSTOM[(0xA8 + (ch)*0x10) / 2])
++
++void PaulaHw_Close();
++
++// frames: bytes per buffer (even), period: Paula period for the output rate. False when the channels are busy.
++bool PaulaHw_Open(unsigned frames, unsigned period)
++{
++    static UBYTE channels[] = {3, 5, 10, 12};
++    Frames = frames;
++    Period = (UWORD)period;
++    Events = 0;
++    Running = false;
++    for (int s = 0; s < 2; ++s)
++        for (int i = 0; i < 2; ++i)
++            Buf[s][i] = nullptr;
++
++    AudPort = CreateMsgPort();
++    if (!AudPort) {
++        return false;
++    }
++    AudIO = (struct IOAudio*)CreateIORequest(AudPort, sizeof(struct IOAudio));
++    if (!AudIO) {
++        PaulaHw_Close();
++        return false;
++    }
++    AudIO->ioa_Request.io_Message.mn_Node.ln_Pri = 127; // nobody takes the channels away
++    AudIO->ioa_Request.io_Flags = ADIOF_NOWAIT;
++    AudIO->ioa_Data = channels;
++    AudIO->ioa_Length = sizeof(channels);
++    if (OpenDevice((CONST_STRPTR)AUDIONAME, 0, (struct IORequest*)AudIO, 0)) {
++        DeleteIORequest((struct IORequest*)AudIO);
++        AudIO = nullptr;
++        PaulaHw_Close();
++        return false;
++    }
++    ULONG units = (ULONG)AudIO->ioa_Request.io_Unit;
++    LCh = (units & 1) ? 0 : 3;
++    RCh = (units & 2) ? 1 : 2;
++    for (int s = 0; s < 2; ++s) {
++        for (int i = 0; i < 2; ++i) {
++            Buf[s][i] = (signed char*)AllocMem(frames, MEMF_CHIP | MEMF_CLEAR);
++            if (!Buf[s][i]) {
++                PaulaHw_Close();
++                return false;
++            }
++        }
++    }
++    TimPort = CreateMsgPort();
++    TimReq = TimPort ? (struct timerequest*)CreateIORequest(TimPort, sizeof(struct timerequest)) : nullptr;
++    if (!TimReq || OpenDevice((CONST_STRPTR)TIMERNAME, UNIT_MICROHZ, (struct IORequest*)TimReq, 0)) {
++        PaulaHw_Close();
++        return false;
++    }
++    TimOpen = true;
++    return true;
++}
++
++signed char* PaulaHw_Buf(int side, int idx)
++{
++    return Buf[side][idx];
++}
++
++// Both sides of buffer 0 must be filled; buffer 1 is filled at the first event.
++void PaulaHw_Start()
++{
++    CacheClearE(Buf[0][0], Frames, CACRF_ClearD);
++    CacheClearE(Buf[1][0], Frames, CACRF_ClearD);
++    const UWORD bits = (UWORD)((1 << LCh) | (1 << RCh));
++    const UWORD ints = (UWORD)((1 << (7 + LCh)) | (1 << (7 + RCh)));
++    Forbid();
++    CUSTOM[0x96 / 2] = bits; // DMA off
++    CUSTOM[0x9C / 2] = ints; // clear the interrupt flags
++    *CH_LC(LCh) = (ULONG)Buf[0][0];
++    CH_LEN(LCh) = (UWORD)(Frames / 2);
++    CH_PER(LCh) = Period;
++    CH_VOL(LCh) = 64;
++    *CH_LC(RCh) = (ULONG)Buf[1][0];
++    CH_LEN(RCh) = (UWORD)(Frames / 2);
++    CH_PER(RCh) = Period;
++    CH_VOL(RCh) = 64;
++    CUSTOM[0x96 / 2] = (UWORD)(0x8200 | bits); // both channels start together
++    Permit();
++    Events = 0;
++    Running = true;
++}
++
++// Index of the buffer to fill next (then PaulaHw_Commit), or -1 when no buffer has finished since the last call.
++int PaulaHw_Poll()
++{
++    const UWORD ints = (UWORD)((1 << (7 + LCh)) | (1 << (7 + RCh)));
++    if (!Running || !(CUSTOM[0x1E / 2] & (1 << (7 + LCh)))) {
++        return -1;
++    }
++    CUSTOM[0x9C / 2] = ints;
++    unsigned n = Events++; // event 0 is the start of the DMA: buffer 0 plays, buffer 1 is to be filled
++    return (int)((n + 1) & 1); // event n: buffer n&1 plays, the other one is queued next
++}
++
++void PaulaHw_Commit(int idx)
++{
++    CacheClearE(Buf[0][idx], Frames, CACRF_ClearD);
++    CacheClearE(Buf[1][idx], Frames, CACRF_ClearD);
++    *CH_LC(LCh) = (ULONG)Buf[0][idx];
++    *CH_LC(RCh) = (ULONG)Buf[1][idx];
++}
++
++// Sleeps about 4 ms or until one of the signals in 'sigs' arrives; returns the signals of 'sigs' that came.
++ULONG PaulaHw_Wait(ULONG sigs)
++{
++    TimReq->tr_node.io_Command = TR_ADDREQUEST;
++    TimReq->tr_time.tv_secs = 0;
++    TimReq->tr_time.tv_micro = 4000;
++    SendIO((struct IORequest*)TimReq);
++    ULONG got = Wait(sigs | (1UL << TimPort->mp_SigBit));
++    AbortIO((struct IORequest*)TimReq);
++    WaitIO((struct IORequest*)TimReq);
++    return got & sigs;
++}
++
++void PaulaHw_Close()
++{
++    if (Running) {
++        const UWORD bits = (UWORD)((1 << LCh) | (1 << RCh));
++        CUSTOM[0x96 / 2] = bits;
++        CH_VOL(LCh) = 0;
++        CH_VOL(RCh) = 0;
++        Running = false;
++    }
++    for (int s = 0; s < 2; ++s) {
++        for (int i = 0; i < 2; ++i) {
++            if (Buf[s][i]) {
++                FreeMem(Buf[s][i], Frames);
++                Buf[s][i] = nullptr;
++            }
++        }
++    }
++    if (TimOpen) {
++        CloseDevice((struct IORequest*)TimReq);
++        TimOpen = false;
++    }
++    if (TimReq) {
++        DeleteIORequest((struct IORequest*)TimReq);
++        TimReq = nullptr;
++    }
++    if (TimPort) {
++        DeleteMsgPort(TimPort);
++        TimPort = nullptr;
++    }
++    if (AudIO) {
++        CloseDevice((struct IORequest*)AudIO);
++        DeleteIORequest((struct IORequest*)AudIO);
++        AudIO = nullptr;
++    }
++    if (AudPort) {
++        DeleteMsgPort(AudPort);
++        AudPort = nullptr;
++    }
++}
+diff --git a/common/soundio_amiga.cpp b/common/soundio_amiga.cpp
+index fcf8664..04e0ff5 100644
+--- a/common/soundio_amiga.cpp
++++ b/common/soundio_amiga.cpp
+@@ -247,137 +247,61 @@ static void Mix_Output()
+ }
+ 
+ // ---------------------------------------------------------------------------------- Paula
++// Direct hardware access (paulahw_amiga.cpp): audio.device is silent on Amiga 2.
+ 
+-static struct MsgPort* AudPort = nullptr;
+-static struct IOAudio* AudAlloc = nullptr;
+-static struct IOAudio* AudIO[PAULA_BUFS][2];
+-static signed char* AudBuf[PAULA_BUFS][2];
+-static unsigned char AudBusy[PAULA_BUFS];
++bool PaulaHw_Open(unsigned frames, unsigned period);
++signed char* PaulaHw_Buf(int side, int idx);
++void PaulaHw_Start();
++int PaulaHw_Poll();
++void PaulaHw_Commit(int idx);
++unsigned long PaulaHw_Wait(unsigned long sigs);
++void PaulaHw_Close();
++static bool PaulaOn = false;
+ 
+-static void Paula_Send(int b)
+-{
+-    for (int c = 0; c < 2; ++c) {
+-        AudIO[b][c]->ioa_Request.io_Command = CMD_WRITE;
+-        AudIO[b][c]->ioa_Request.io_Flags = ADIOF_PERVOL;
+-        AudIO[b][c]->ioa_Length = Blk;
+-        SendIO((struct IORequest*)AudIO[b][c]); // (BeginIO would need amiga.lib)
+-    }
+-    AudBusy[b] = 2;
+-}
+-
+-static void Paula_Fill_And_Send(int b)
++static void Paula_Fill(int idx)
+ {
+     Mix_Output();
++    signed char* l = PaulaHw_Buf(0, idx);
++    signed char* r = PaulaHw_Buf(1, idx);
+     for (int i = 0; i < Blk; ++i) {
+-        AudBuf[b][0][i] = (signed char)(OutBlock[i * 2] >> 8);     // left
+-        AudBuf[b][1][i] = (signed char)(OutBlock[i * 2 + 1] >> 8); // right
++        l[i] = (signed char)(OutBlock[i * 2] >> 8);     // left
++        r[i] = (signed char)(OutBlock[i * 2 + 1] >> 8); // right
+     }
+-    Paula_Send(b);
+ }
+ 
+ static bool Paula_Open()
+ {
+-    static UBYTE channels[] = {3, 5, 10, 12}; // one left (0 or 3) and one right (1 or 2) channel
+     const ULONG clock = (SysBase->VBlankFrequency == 50) ? 3546895UL : 3579545UL;
+-
+-    AudPort = CreateMsgPort();
+-    if (!AudPort) {
+-        return false;
+-    }
+-    AudAlloc = (struct IOAudio*)CreateIORequest(AudPort, sizeof(struct IOAudio));
+-    if (!AudAlloc) {
++    // period rounded up: the real rate is never above OUT_RATE (PAL: 161 -> 22 030 Hz)
++    if (!PaulaHw_Open((unsigned)Blk, (unsigned)((clock + OUT_RATE - 1) / OUT_RATE))) {
+         return false;
+     }
+-    AudAlloc->ioa_Request.io_Message.mn_Node.ln_Pri = 1;
+-    AudAlloc->ioa_Request.io_Flags = ADIOF_NOWAIT;
+-    AudAlloc->ioa_Data = channels;
+-    AudAlloc->ioa_Length = sizeof(channels);
+-    if (OpenDevice((CONST_STRPTR)AUDIONAME, 0, (struct IORequest*)AudAlloc, 0)) {
+-        DeleteIORequest((struct IORequest*)AudAlloc);
+-        AudAlloc = nullptr;
+-        return false;
+-    }
+-    ULONG units = (ULONG)AudAlloc->ioa_Request.io_Unit;
+-    for (int b = 0; b < PAULA_BUFS; ++b) {
+-        for (int c = 0; c < 2; ++c) {
+-            AudBuf[b][c] = (signed char*)AllocMem(BLK_MAX, MEMF_CHIP | MEMF_CLEAR);
+-            struct IOAudio* io = (struct IOAudio*)AllocMem(sizeof(struct IOAudio), MEMF_PUBLIC);
+-            if (!AudBuf[b][c] || !io) {
+-                return false;
+-            }
+-            *io = *AudAlloc;
+-            io->ioa_Request.io_Unit = (struct Unit*)(units & (c ? 0x06 : 0x09));
+-            io->ioa_Data = (UBYTE*)AudBuf[b][c];
+-            // period rounded up: the real rate is never above OUT_RATE (PAL: 161 -> 22 030 Hz)
+-            io->ioa_Period = (UWORD)((clock + OUT_RATE - 1) / OUT_RATE);
+-            io->ioa_Volume = 64;
+-            io->ioa_Cycles = 1;
+-            AudIO[b][c] = io;
+-        }
+-    }
+-    for (int b = 0; b < PAULA_BUFS; ++b) {
+-        Paula_Fill_And_Send(b);
+-    }
++    PaulaOn = true;
++    Paula_Fill(0);
++    PaulaHw_Start();
+     return true;
+ }
+ 
+ static void Paula_Close()
+ {
+-    for (int b = 0; b < PAULA_BUFS; ++b) {
+-        for (int c = 0; c < 2; ++c) {
+-            if (AudIO[b][c]) {
+-                if (AudBusy[b]) {
+-                    AbortIO((struct IORequest*)AudIO[b][c]);
+-                    WaitIO((struct IORequest*)AudIO[b][c]);
+-                }
+-                FreeMem(AudIO[b][c], sizeof(struct IOAudio));
+-                AudIO[b][c] = nullptr;
+-            }
+-            if (AudBuf[b][c]) {
+-                FreeMem(AudBuf[b][c], BLK_MAX);
+-                AudBuf[b][c] = nullptr;
+-            }
+-        }
+-    }
+-    if (AudAlloc) {
+-        CloseDevice((struct IORequest*)AudAlloc);
+-        DeleteIORequest((struct IORequest*)AudAlloc);
+-        AudAlloc = nullptr;
+-    }
+-    if (AudPort) {
+-        DeleteMsgPort(AudPort);
+-        AudPort = nullptr;
++    if (PaulaOn || true) {
++        PaulaHw_Close();
++        PaulaOn = false;
+     }
+ }
+ 
+-static void Paula_Service()
++// Called every few ms: refills the buffer that has just finished.
++static bool Paula_Service(ULONG quit_mask)
+ {
+-    struct IOAudio* io;
+-    while ((io = (struct IOAudio*)GetMsg(AudPort)) != nullptr) {
+-        for (int b = 0; b < PAULA_BUFS; ++b) {
+-            for (int c = 0; c < 2; ++c) {
+-                if (AudIO[b][c] == io && AudBusy[b]) {
+-                    --AudBusy[b];
+-                }
+-            }
+-        }
+-    }
+-    {
+-        int idle = 0;
+-        for (int b = 0; b < PAULA_BUFS; ++b) {
+-            if (!AudBusy[b]) {
+-                ++idle;
+-            }
+-        }
+-        if (idle == PAULA_BUFS) {
+-            ++StatUnderruns; // Paula ran dry: a gap in the sound
+-        }
++    if (PaulaHw_Wait(quit_mask)) {
++        return false;
+     }
+-    for (int b = 0; b < PAULA_BUFS; ++b) {
+-        if (!AudBusy[b]) {
+-            Paula_Fill_And_Send(b);
+-        }
++    int idx = PaulaHw_Poll();
++    if (idx >= 0) {
++        Paula_Fill(idx);
++        PaulaHw_Commit(idx);
+     }
++    return true;
+ }
+ 
+ // ---------------------------------------------------------------------------------- AHI
+@@ -654,9 +578,8 @@ static void Mixer_Main()
+     while (!Quit && Backend != MODE_OFF) {
+         ULONG sigs = 0;
+         if (Backend == MODE_PAULA) {
+-            sigs = Wait((1UL << AudPort->mp_SigBit) | (1UL << QuitSig));
+-            if (sigs & (1UL << AudPort->mp_SigBit)) {
+-                Paula_Service();
++            if (!Paula_Service(1UL << QuitSig)) {
++                break;
+             }
+         } else if (Backend == MODE_AHI) {
+             sigs = Wait((1UL << AhiSig) | (1UL << QuitSig));
+-- 
+2.45.2.windows.1
+

@@ -1,7 +1,7 @@
 From ed61d954864f428b76158edb3da96eee76697048 Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Sun, 22 Nov 2026 19:00:30 +0100
-Subject: [PATCH 02/21] Amiga: P96 video backend, input, watchdog, frame dump,
+Subject: [PATCH 02/22] Amiga: P96 video backend, input, watchdog, frame dump,
  Choose_Side guard, no amiga.lib
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>

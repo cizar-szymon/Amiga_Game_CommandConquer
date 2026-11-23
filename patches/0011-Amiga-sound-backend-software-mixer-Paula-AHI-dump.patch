@@ -1,7 +1,7 @@
 From 4badeec0034ee37d9144e37ccfcf9389d90a5fb7 Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Sun, 22 Nov 2026 22:37:41 +0100
-Subject: [PATCH 11/21] Amiga: sound backend (software mixer, Paula, AHI, dump)
+Subject: [PATCH 11/22] Amiga: sound backend (software mixer, Paula, AHI, dump)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 ---
