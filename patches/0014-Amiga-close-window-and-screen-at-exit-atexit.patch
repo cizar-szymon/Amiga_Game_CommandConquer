@@ -1,7 +1,7 @@
 From 9f7ebcdf814a3211d592b601dfafcb304998e5be Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Mon, 23 Nov 2026 00:03:38 +0100
-Subject: [PATCH 14/20] Amiga: close window and screen at exit (atexit)
+Subject: [PATCH 14/21] Amiga: close window and screen at exit (atexit)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
 ---

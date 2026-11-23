@@ -1,0 +1,514 @@
+From 0f92c53185ebda1085182c817133d4fd309d9324 Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Mon, 23 Nov 2026 12:18:36 +0100
+Subject: [PATCH 21/21] Amiga: movie sound through a Paula task (tool type
+ MOVIESOUND=PAULA|AHI), silent movies by default with AHI
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ common/CMakeLists.txt       |   2 +-
+ common/moviepaula_amiga.cpp | 304 ++++++++++++++++++++++++++++++++++++
+ common/vqaaudio_amiga.cpp   | 102 ++++++++----
+ 3 files changed, 379 insertions(+), 29 deletions(-)
+ create mode 100644 common/moviepaula_amiga.cpp
+
+diff --git a/common/CMakeLists.txt b/common/CMakeLists.txt
+index f19d53a..4b5cc5e 100644
+--- a/common/CMakeLists.txt
++++ b/common/CMakeLists.txt
+@@ -134,7 +134,7 @@ set(COMMONV_SRC
+ )
+ 
+ if(AMIGA)
+-    list(APPEND COMMONV_SRC soundio_common.cpp soundio_amiga.cpp vqaaudio_amiga.cpp)
++    list(APPEND COMMONV_SRC soundio_common.cpp soundio_amiga.cpp vqaaudio_amiga.cpp moviepaula_amiga.cpp)
+ elseif(DSOUND)
+     list(APPEND COMMONV_SRC soundio.cpp vqaaudio_dsound.cpp)
+     list(APPEND VANILLA_LIBS dsound)
+diff --git a/common/moviepaula_amiga.cpp b/common/moviepaula_amiga.cpp
+new file mode 100644
+index 0000000..9423157
+--- /dev/null
++++ b/common/moviepaula_amiga.cpp
+@@ -0,0 +1,304 @@
++// Movie sound through Paula (audio.device) in a task of its own, independent of the game mixer. Used when the game
++// sound goes through AHI: with AHI (warp.audio) the movie sound froze the machine after seconds to a minute
++// (Amiga 2, 23.11.2026), Paula is a separate output on the Warp cards and both can be heard at the same time.
++// The game task appends the audio data of the movie to a byte FIFO; the task converts it to 8 bit and plays it on
++// two Paula channels (left and right get the same data for a mono movie), three buffers per channel in Chip RAM.
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++
++#include <exec/types.h>
++#include <exec/memory.h>
++#include <exec/execbase.h>
++#include <devices/audio.h>
++#include <dos/dostags.h>
++#include <proto/exec.h>
++#include <proto/dos.h>
++
++extern struct ExecBase* SysBase;
++
++#define MP_FIFO 131072
++#define MP_BUFS 3
++#define MP_FRAMES 768
++
++static unsigned char* Fifo = nullptr;
++static volatile unsigned FifoRd = 0, FifoWr = 0;
++static volatile bool Playing = false;
++static volatile bool Quit = false;
++static volatile int Ready = 0; // 1 running, -1 failed, 2 finished
++static struct Process* Proc = nullptr;
++static struct Task* ParentTask = nullptr;
++static struct Task* ProcTask = nullptr;
++static BYTE QuitSig = -1;
++static int MBits = 16;
++static bool MStereo = false;
++static unsigned MRate = 22050;
++
++static struct MsgPort* Port = nullptr;
++static struct IOAudio* Alloc = nullptr;
++static struct IOAudio* IO[MP_BUFS][2];
++static signed char* Buf[MP_BUFS][2];
++static unsigned char Busy[MP_BUFS];
++static unsigned PaulaRate = 22030;
++static unsigned Frac = 0;
++static unsigned StatSent = 0, StatPlayed = 0, StatEmpty = 0;
++static int OpenResult = 0;
++
++static void Send(int b)
++{
++    for (int c = 0; c < 2; ++c) {
++        IO[b][c]->ioa_Request.io_Command = CMD_WRITE;
++        IO[b][c]->ioa_Request.io_Flags = ADIOF_PERVOL;
++        IO[b][c]->ioa_Length = MP_FRAMES;
++        SendIO((struct IORequest*)IO[b][c]);
++    }
++    Busy[b] = 2;
++    ++StatSent;
++}
++
++// Fill one buffer pair from the FIFO (silence when nothing is playing or the FIFO is empty).
++static void Fill_And_Send(int b)
++{
++    const unsigned fb = (unsigned)((MBits / 8) * (MStereo ? 2 : 1));
++    const unsigned mask = MP_FIFO - 1;
++    const unsigned step = (unsigned)(((unsigned long)MRate << 16) / PaulaRate);
++    unsigned rd = FifoRd;
++    unsigned avail = (FifoWr - rd) / fb;
++    unsigned frac = Frac;
++    bool play = Playing;
++    for (int i = 0; i < MP_FRAMES; ++i) {
++        signed char l = 0, r = 0;
++        unsigned idx = frac >> 16;
++        if (play && idx < avail) {
++            unsigned o = (rd + idx * fb) & mask;
++            if (MBits == 8) {
++                l = (signed char)((int)Fifo[o] - 128);
++                r = MStereo ? (signed char)((int)Fifo[(o + 1) & mask] - 128) : l;
++            } else {
++                l = (signed char)Fifo[o]; // big endian 16 bit: the first byte is the high byte
++                r = MStereo ? (signed char)Fifo[(o + 2) & mask] : l;
++            }
++            frac += step;
++        }
++        Buf[b][0][i] = l;
++        Buf[b][1][i] = r;
++    }
++    if (play && avail == 0) {
++        ++StatEmpty;
++    }
++    if (play) {
++        unsigned used = frac >> 16;
++        if (used > avail) {
++            used = avail;
++        }
++        StatPlayed += used * fb;
++        FifoRd = rd + used * fb;
++        Frac = frac & 0xFFFF;
++    }
++    Send(b);
++}
++
++static void Task_Main()
++{
++    static UBYTE channels[] = {3, 5, 10, 12};
++    const ULONG clock = (SysBase->VBlankFrequency == 50) ? 3546895UL : 3579545UL;
++    bool ok = false;
++
++    QuitSig = AllocSignal(-1);
++    Port = CreateMsgPort();
++    if (Port && QuitSig >= 0) {
++        Alloc = (struct IOAudio*)CreateIORequest(Port, sizeof(struct IOAudio));
++    }
++    if (Alloc) {
++        Alloc->ioa_Request.io_Message.mn_Node.ln_Pri = 1;
++        Alloc->ioa_Request.io_Flags = ADIOF_NOWAIT;
++        Alloc->ioa_Data = channels;
++        Alloc->ioa_Length = sizeof(channels);
++        if (OpenDevice((CONST_STRPTR)AUDIONAME, 0, (struct IORequest*)Alloc, 0) == 0) {
++            ok = true;
++        } else {
++            DeleteIORequest((struct IORequest*)Alloc);
++            Alloc = nullptr;
++        }
++    }
++    const UWORD period = (UWORD)((clock + 22050 - 1) / 22050);
++    PaulaRate = clock / period;
++    if (ok) {
++        ULONG units = (ULONG)Alloc->ioa_Request.io_Unit;
++        for (int b = 0; b < MP_BUFS && ok; ++b) {
++            for (int c = 0; c < 2; ++c) {
++                Buf[b][c] = (signed char*)AllocMem(MP_FRAMES, MEMF_CHIP | MEMF_CLEAR);
++                struct IOAudio* io = (struct IOAudio*)AllocMem(sizeof(struct IOAudio), MEMF_PUBLIC);
++                if (!Buf[b][c] || !io) {
++                    ok = false;
++                    break;
++                }
++                *io = *Alloc;
++                io->ioa_Request.io_Unit = (struct Unit*)(units & (c ? 0x06 : 0x09));
++                io->ioa_Data = (UBYTE*)Buf[b][c];
++                io->ioa_Period = period;
++                io->ioa_Volume = 64;
++                io->ioa_Cycles = 1;
++                IO[b][c] = io;
++            }
++        }
++    }
++    if (ok) {
++        for (int b = 0; b < MP_BUFS; ++b) {
++            Fill_And_Send(b);
++        }
++    }
++    Ready = ok ? 1 : -1;
++    Signal(ParentTask, SIGF_SINGLE);
++
++    while (ok && !Quit) {
++        ULONG sigs = Wait((1UL << Port->mp_SigBit) | (1UL << QuitSig));
++        if (sigs & (1UL << QuitSig)) {
++            break;
++        }
++        struct IOAudio* io;
++        while ((io = (struct IOAudio*)GetMsg(Port)) != nullptr) {
++            for (int b = 0; b < MP_BUFS; ++b) {
++                for (int c = 0; c < 2; ++c) {
++                    if (IO[b][c] == io && Busy[b]) {
++                        --Busy[b];
++                    }
++                }
++            }
++        }
++        for (int b = 0; b < MP_BUFS; ++b) {
++            if (!Busy[b]) {
++                Fill_And_Send(b);
++            }
++        }
++    }
++
++    for (int b = 0; b < MP_BUFS; ++b) {
++        for (int c = 0; c < 2; ++c) {
++            if (IO[b][c]) {
++                if (Busy[b]) {
++                    AbortIO((struct IORequest*)IO[b][c]);
++                    WaitIO((struct IORequest*)IO[b][c]);
++                }
++                FreeMem(IO[b][c], sizeof(struct IOAudio));
++                IO[b][c] = nullptr;
++            }
++            if (Buf[b][c]) {
++                FreeMem(Buf[b][c], MP_FRAMES);
++                Buf[b][c] = nullptr;
++            }
++        }
++        Busy[b] = 0;
++    }
++    if (Alloc) {
++        CloseDevice((struct IORequest*)Alloc);
++        DeleteIORequest((struct IORequest*)Alloc);
++        Alloc = nullptr;
++    }
++    if (Port) {
++        DeleteMsgPort(Port);
++        Port = nullptr;
++    }
++    if (QuitSig >= 0) {
++        FreeSignal(QuitSig);
++        QuitSig = -1;
++    }
++    ProcTask = nullptr;
++    Ready = 2;
++}
++
++void MoviePaula_Close();
++
++bool MoviePaula_Open(int bits_per_sample, bool stereo, int rate)
++{
++    if (Proc) {
++        return false;
++    }
++    Fifo = (unsigned char*)std::malloc(MP_FIFO);
++    if (!Fifo) {
++        return false;
++    }
++    FifoRd = FifoWr = 0;
++    Frac = 0;
++    Playing = false;
++    Quit = false;
++    Ready = 0;
++    MBits = bits_per_sample;
++    MStereo = stereo;
++    MRate = (unsigned)rate;
++    static bool exit_hook = false;
++    if (!exit_hook) {
++        exit_hook = true;
++        std::atexit(MoviePaula_Close); // exit() and Ctrl-C bypass the normal shutdown: the task must not outlive the program
++    }
++    ParentTask = FindTask(nullptr);
++    SetSignal(0, SIGF_SINGLE);
++    StatSent = StatPlayed = StatEmpty = 0;
++    OpenResult = 0;
++    Proc = CreateNewProcTags(NP_Entry, (ULONG)Task_Main, NP_Name, (ULONG) "cnc-movie-audio", NP_Priority, 10UL, NP_StackSize, 16384UL, TAG_DONE);
++    if (!Proc) {
++        std::free(Fifo);
++        Fifo = nullptr;
++        return false;
++    }
++    ProcTask = &Proc->pr_Task;
++    Wait(SIGF_SINGLE);
++    OpenResult = Ready;
++    if (Ready != 1) {
++        for (int i = 0; i < 300 && Ready != 2; ++i) {
++            Delay(1);
++        }
++        Delay(5);
++        Proc = nullptr;
++        std::free(Fifo);
++        Fifo = nullptr;
++        return false;
++    }
++    return true;
++}
++
++unsigned MoviePaula_Space()
++{
++    return MP_FIFO - (FifoWr - FifoRd);
++}
++
++void MoviePaula_Write(const void* data, unsigned len)
++{
++    const unsigned char* d = (const unsigned char*)data;
++    unsigned wr = FifoWr;
++    for (unsigned i = 0; i < len; ++i) {
++        Fifo[(wr + i) & (MP_FIFO - 1)] = d[i];
++    }
++    FifoWr = wr + len;
++}
++
++void MoviePaula_Play(bool play)
++{
++    Playing = play;
++}
++
++void MoviePaula_Close()
++{
++    if (!Proc) {
++        return;
++    }
++    Playing = false;
++    Quit = true;
++    if (ProcTask && QuitSig >= 0) {
++        Signal(ProcTask, 1UL << QuitSig);
++    }
++    for (int i = 0; i < 300 && Ready != 2; ++i) {
++        Delay(1);
++    }
++    Delay(5); // the task is still returning from its entry function
++    {
++        FILE* f = std::fopen("RAM:cnc-sound-log.txt", "a");
++        if (f) {
++            std::fprintf(f, "movie paula: open %d, written %u bytes, played %u bytes, %u buffers sent, %u empty, rate %u bits %d stereo %d, paula rate %u\n", OpenResult, FifoWr, StatPlayed, StatSent, StatEmpty, MRate, MBits, (int)MStereo, PaulaRate);
++            std::fclose(f);
++        }
++    }
++    Proc = nullptr;
++    std::free(Fifo);
++    Fifo = nullptr;
++}
+diff --git a/common/vqaaudio_amiga.cpp b/common/vqaaudio_amiga.cpp
+index b7018c6..e37deb6 100644
+--- a/common/vqaaudio_amiga.cpp
++++ b/common/vqaaudio_amiga.cpp
+@@ -22,6 +22,11 @@ unsigned Amiga_Stream_Space(SampleTrackerTypeImp* st);
+ void Amiga_Stream_Write(SampleTrackerTypeImp* st, const void* data, unsigned len);
+ void Amiga_Stream_Play(SampleTrackerTypeImp* st, bool play);
+ void Amiga_Stream_Close(SampleTrackerTypeImp* st);
++bool MoviePaula_Open(int bits_per_sample, bool stereo, int rate);
++unsigned MoviePaula_Space();
++void MoviePaula_Write(const void* data, unsigned len);
++void MoviePaula_Play(bool play);
++void MoviePaula_Close();
+ 
+ int AudioFlags;
+ int TimerIntCount;
+@@ -32,28 +37,63 @@ unsigned VQAAudioPaused;
+ VQAHandle* AudioVQAHandle;
+ 
+ static TimerClass timer;
+-static SampleTrackerTypeImp* Stream = nullptr;
++static SampleTrackerTypeImp* Stream = nullptr; // stream tracker of the game mixer (game sound through Paula)
++static bool ViaPaulaTask = false;              // or the Paula task of its own (game sound through AHI)
++static bool Opened = false;
+ 
+-// Create the stream tracker once the sound format of the movie is known; false = silent movie.
++static unsigned S_Space()
++{
++    return ViaPaulaTask ? MoviePaula_Space() : Amiga_Stream_Space(Stream);
++}
++
++static void S_Write(const void* d, unsigned n)
++{
++    if (ViaPaulaTask) {
++        MoviePaula_Write(d, n);
++    } else {
++        Amiga_Stream_Write(Stream, d, n);
++    }
++}
++
++static void S_Play(bool on)
++{
++    if (ViaPaulaTask) {
++        MoviePaula_Play(on);
++    } else {
++        Amiga_Stream_Play(Stream, on);
++    }
++}
++
++// Create the sound output once the sound format of the movie is known; without it the movie is silent.
++// Game sound through Paula: a stream tracker in the mixer. Through AHI: see below.
+ static void Open_Stream(VQAAudio* audio)
+ {
+-    if (Stream || !Amiga_Sound_Active()) {
++    if (Opened || !Amiga_Sound_Active()) {
+         return;
+     }
+-    // Movie sound is played through Paula only. With AHI (warp.audio on the Warp cards) the machine froze after a few
+-    // seconds to a minute of movie sound (Amiga 2, 23.11.2026; the same movie without sound runs for hours), cause not
+-    // found: with AHI the movies are silent, unless the file PROGDIR:vqaahi exists (for tests).
+-    if (Amiga_Sound_Backend() == 2) {
+-        FILE* f = fopen("PROGDIR:vqaahi", "r");
+-        if (!f) {
+-            return;
+-        }
+-        fclose(f);
+-    }
+     if (audio->SampleRate <= 0 || (audio->BitsPerSample != 8 && audio->BitsPerSample != 16)) {
+         return;
+     }
+-    Stream = Amiga_Stream_Open(audio->BitsPerSample, audio->Channels > 1, audio->SampleRate);
++    int backend = Amiga_Sound_Backend();
++    if (backend == 1) {
++        Stream = Amiga_Stream_Open(audio->BitsPerSample, audio->Channels > 1, audio->SampleRate);
++        Opened = Stream != nullptr;
++        ViaPaulaTask = false;
++    } else if (backend == 2) {
++        // Game sound through AHI: the movies are silent by default. Movie sound mixed into AHI froze Amiga 2 (see
++        // docs/PORTING.md); through a Paula task of its own it plays but was not audible on Amiga 2 (Paula output not
++        // connected there). Tool type MOVIESOUND=PAULA (or MOVIESOUND=AHI, for tests) switches it on.
++        extern const char* Amiga_ToolType(const char*);
++        const char* t = Amiga_ToolType("MOVIESOUND");
++        if (t && (t[0] == 'P' || t[0] == 'p')) {
++            Opened = MoviePaula_Open(audio->BitsPerSample, audio->Channels > 1, audio->SampleRate);
++            ViaPaulaTask = Opened;
++        } else if (t && (t[0] == 'A' || t[0] == 'a')) {
++            Stream = Amiga_Stream_Open(audio->BitsPerSample, audio->Channels > 1, audio->SampleRate);
++            Opened = Stream != nullptr;
++            ViaPaulaTask = false;
++        }
++    }
+ }
+ 
+ int VQA_StartTimerInt(VQAHandle* handle, int a2)
+@@ -100,9 +140,15 @@ void VQA_CloseAudio(VQAHandle* handle)
+     VQAData* data = handle->VQABuf;
+     VQAAudio* audio = &data->Audio;
+     VQA_StopAudio(handle);
+-    if (Stream) {
+-        Amiga_Stream_Close(Stream);
+-        Stream = nullptr;
++    if (Opened) {
++        if (ViaPaulaTask) {
++            MoviePaula_Close();
++        } else {
++            Amiga_Stream_Close(Stream);
++            Stream = nullptr;
++        }
++        Opened = false;
++        ViaPaulaTask = false;
+     }
+     AudioVQAHandle = nullptr;
+     audio->Flags &= ~(VQA_AUDIO_FLAG_UNKNOWN001 | VQA_AUDIO_FLAG_UNKNOWN002);
+@@ -116,8 +162,8 @@ int VQA_StartAudio(VQAHandle* handle)
+ 
+     AudioVQAHandle = handle;
+     Open_Stream(audio);
+-    if (Stream) {
+-        Amiga_Stream_Play(Stream, true);
++    if (Opened) {
++        S_Play(true);
+         audio->Flags |= VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
+         AudioFlags |= VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
+     }
+@@ -129,8 +175,8 @@ void VQA_StopAudio(VQAHandle* handle)
+ {
+     VQAData* data = handle->VQABuf;
+     VQAAudio* audio = &data->Audio;
+-    if (Stream) {
+-        Amiga_Stream_Play(Stream, false);
++    if (Opened) {
++        S_Play(false);
+         audio->Flags &= ~VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
+         AudioFlags &= ~VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
+     }
+@@ -139,16 +185,16 @@ void VQA_StopAudio(VQAHandle* handle)
+ void VQA_PauseAudio()
+ {
+     timer.Stop();
+-    if (Stream) {
+-        Amiga_Stream_Play(Stream, false);
++    if (Opened) {
++        S_Play(false);
+     }
+ }
+ 
+ void VQA_ResumeAudio()
+ {
+     timer.Start();
+-    if (Stream && (AudioFlags & VQA_AUDIO_FLAG_AUDIO_DMA_TIMER)) {
+-        Amiga_Stream_Play(Stream, true);
++    if (Opened && (AudioFlags & VQA_AUDIO_FLAG_AUDIO_DMA_TIMER)) {
++        S_Play(true);
+     }
+ }
+ 
+@@ -158,14 +204,14 @@ int VQA_CopyAudio(VQAHandle* handle)
+     VQAData* data = handle->VQABuf;
+     VQAAudio* audio = &data->Audio;
+ 
+-    if (!Stream) {
++    if (!Opened) {
+         return 0; // silent movie
+     }
+     if ((config->OptionFlags & 1) && audio->TempBuf != nullptr && audio->TempBufSize > 0) {
+-        if (Amiga_Stream_Space(Stream) < (unsigned)audio->TempBufSize) {
++        if (S_Space() < (unsigned)audio->TempBufSize) {
+             return -10; // FIFO full: the loader tries again later (the mixer drains it on its own)
+         }
+-        Amiga_Stream_Write(Stream, audio->TempBuf, (unsigned)audio->TempBufSize);
++        S_Write(audio->TempBuf, (unsigned)audio->TempBufSize);
+         audio->TempBufSize = 0;
+     }
+     return 0;
+-- 
+2.45.2.windows.1
+
