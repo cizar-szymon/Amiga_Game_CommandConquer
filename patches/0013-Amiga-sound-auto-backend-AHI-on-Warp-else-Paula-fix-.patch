@@ -1,7 +1,7 @@
 From d31bf74c09c0f07d717753f62ba70765ae0e5f51 Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Sun, 22 Nov 2026 23:58:14 +0100
-Subject: [PATCH 13/16] Amiga: sound auto backend (AHI on Warp, else Paula),
+Subject: [PATCH 13/17] Amiga: sound auto backend (AHI on Warp, else Paula),
  fix log buffer overflow at exit
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
