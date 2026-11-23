@@ -1,0 +1,123 @@
+From caaa3378f969244b7bd82668441d915e62624f5f Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Mon, 23 Nov 2026 20:03:14 +0100
+Subject: [PATCH 25/25] Movie sound follows the displayed frame, starts after
+ the first picture, MovieLag 0.5 s, end-of-movie counters
+
+---
+ common/soundio_amiga.cpp  |  7 +++++++
+ common/vqaaudio_amiga.cpp | 43 ++++++++++++++++++++++++---------------
+ 2 files changed, 34 insertions(+), 16 deletions(-)
+
+diff --git a/common/soundio_amiga.cpp b/common/soundio_amiga.cpp
+index d8c33b2..2e0852f 100644
+--- a/common/soundio_amiga.cpp
++++ b/common/soundio_amiga.cpp
+@@ -779,6 +779,13 @@ void Amiga_Stream_Write(SampleTrackerTypeImp* st, const void* data, unsigned len
+     st->FifoWr = wr + len;
+ }
+ 
++void Amiga_Stream_Info(SampleTrackerTypeImp* st, int* expected, int* consumed, unsigned* written)
++{
++    *expected = st->Expected;
++    *consumed = st->Consumed;
++    *written = st->FifoWr / (unsigned)((st->Bits / 8) * (st->Stereo ? 2 : 1));
++}
++
+ void Amiga_Stream_Expect(SampleTrackerTypeImp* st, int frames)
+ {
+     st->Expected = frames;
+diff --git a/common/vqaaudio_amiga.cpp b/common/vqaaudio_amiga.cpp
+index c60f142..fd0b99f 100644
+--- a/common/vqaaudio_amiga.cpp
++++ b/common/vqaaudio_amiga.cpp
+@@ -22,6 +22,7 @@ unsigned Amiga_Stream_Space(SampleTrackerTypeImp* st);
+ void Amiga_Stream_Write(SampleTrackerTypeImp* st, const void* data, unsigned len);
+ void Amiga_Stream_Play(SampleTrackerTypeImp* st, bool play);
+ void Amiga_Stream_Expect(SampleTrackerTypeImp* st, int frames);
++void Amiga_Stream_Info(SampleTrackerTypeImp* st, int* expected, int* consumed, unsigned* written);
+ void Amiga_Stream_Close(SampleTrackerTypeImp* st);
+ bool MoviePaula_Open(int bits_per_sample, bool stereo, int rate);
+ unsigned MoviePaula_Space();
+@@ -42,9 +43,8 @@ static SampleTrackerTypeImp* Stream = nullptr; // stream tracker of the game mix
+ static bool ViaPaulaTask = false;              // or the Paula task of its own (game sound through AHI)
+ static bool Opened = false;
+ static unsigned MovieRate = 22050;
+-static bool ClkStarted = false;
+-static unsigned ClkT0 = 0;
+-static int MovieLag = 2048; // frames between the mixer and the speaker; PROGDIR:movielag overrides (tests)
++static bool PendingPlay = false; // the sound starts when the first picture is on the screen
++static int MovieLag = 11025; // how much later than its frame the sound plays (frames); PROGDIR:movielag overrides (tests)
+ 
+ static unsigned S_Space()
+ {
+@@ -152,6 +152,16 @@ void VQA_CloseAudio(VQAHandle* handle)
+     VQAData* data = handle->VQABuf;
+     VQAAudio* audio = &data->Audio;
+     VQA_StopAudio(handle);
++    if (Opened && !ViaPaulaTask && Stream) {
++        int ex = 0, co = 0;
++        unsigned wr = 0;
++        Amiga_Stream_Info(Stream, &ex, &co, &wr);
++        FILE* lf = std::fopen("RAM:cnc-sound-log.txt", "a");
++        if (lf) {
++            std::fprintf(lf, "movie sound: expected %d consumed %d written %u (frames) lag %d rate %u%c", ex, co, wr, MovieLag, MovieRate, 10);
++            std::fclose(lf);
++        }
++    }
+     if (Opened) {
+         if (ViaPaulaTask) {
+             MoviePaula_Close();
+@@ -175,8 +185,7 @@ int VQA_StartAudio(VQAHandle* handle)
+     AudioVQAHandle = handle;
+     Open_Stream(audio);
+     if (Opened) {
+-        ClkStarted = false;
+-        S_Play(true);
++        PendingPlay = true; // S_Play(true) follows in VQA_GetTime after the first frame has been drawn
+         audio->Flags |= VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
+         AudioFlags |= VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
+     }
+@@ -189,6 +198,7 @@ void VQA_StopAudio(VQAHandle* handle)
+     VQAData* data = handle->VQABuf;
+     VQAAudio* audio = &data->Audio;
+     if (Opened) {
++        PendingPlay = false;
+         S_Play(false);
+         audio->Flags &= ~VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
+         AudioFlags &= ~VQA_AUDIO_FLAG_AUDIO_DMA_TIMER;
+@@ -243,19 +253,20 @@ unsigned VQA_GetTime(VQAHandle* handle)
+ {
+     const unsigned t = timer.Time();
+     if (Opened && (AudioFlags & VQA_AUDIO_FLAG_AUDIO_DMA_TIMER)) {
+-        if (!ViaPaulaTask && Stream) {
+-            // tell the mixer where the sound should be now (it corrects its speed, see Mix_Fifo)
+-            if (!ClkStarted) {
+-                ClkStarted = true;
+-                ClkT0 = t;
+-            }
+-            Amiga_Stream_Expect(Stream, (int)((t - ClkT0) * MovieRate / 60u) - MovieLag);
++        // The picture cannot always keep up with the timer (decoding takes a little longer than a frame): the sound
++        // follows the frame that is on the screen, the mixer corrects its speed (see Mix_Fifo). It starts when the
++        // first picture is there and its frame is MovieLag frames old.
++        const int rate = handle->Config.DrawRate > 0 ? handle->Config.DrawRate : 15;
++        const int frame = handle->VQABuf->Drawer.LastFrame;
++        const int expected = (int)(((long)frame * (long)MovieRate) / rate) - MovieLag;
++        if (PendingPlay && handle->VQABuf->DrawnFrames > 0 && expected >= 0) {
++            PendingPlay = false;
++            S_Play(true);
+         }
+-        if (MovieLag >= 0) {
+-            const unsigned lag = (unsigned)MovieLag * 60u / MovieRate;
+-            return t > lag ? t - lag : 0;
++        if (!ViaPaulaTask && Stream) {
++            Amiga_Stream_Expect(Stream, expected);
+         }
+-        return t + (unsigned)(-MovieLag) * 60u / MovieRate;
++        return t;
+     }
+     return t;
+ }
+-- 
+2.45.2.windows.1
+

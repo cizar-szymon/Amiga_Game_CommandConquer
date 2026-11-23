@@ -1,7 +1,7 @@
 From b0b2d06163b0c40bbe5fada5dc30825d7c1d237b Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Sun, 22 Nov 2026 20:43:58 +0100
-Subject: [PATCH 07/24] Amiga: FPGA E-Clock probes, per-layer and per-type
+Subject: [PATCH 07/25] Amiga: FPGA E-Clock probes, per-layer and per-type
  profiler slots, scenario test switch
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
