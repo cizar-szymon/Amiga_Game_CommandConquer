@@ -15,7 +15,7 @@ Tested on: A1200 + Warp 1260 Extreme and A4000 + Warp 7060 (68060), AmigaOS 3.2.
 - own AmigaOS back end (no SDL): Picasso96 screen, `ReadEClock` timing, sound and music through the
   Amiga's own audio chip (Paula, default) or AHI
 - starts from the icon (Tool Types `SOUND=PAULA|AHI|OFF`, `MOVIES=OFF`) or from a Shell, Ctrl-C closes it
-- bug reports with the F10 key: a window in the style of the game's menus sends the report (e-mail, words,
+- bug reports with the F10 key: a window in the style of the game's menus sends the report (e-mail, description,
   state of the game, picture of the screen) to the game server (needs a TCP/IP stack)
 - not yet: multiplayer
 

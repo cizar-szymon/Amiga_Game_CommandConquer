@@ -1,0 +1,413 @@
+From 26c2c11dd37f416772adc286d129494d68bb7a9e Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Tue, 24 Nov 2026 12:34:13 +0100
+Subject: [PATCH 29/29] Release 0.4: bug report window with one multi-line text
+ box (wraps by itself)
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017g4PoTADs6Z5A5aMeTycB9
+---
+ common/bugtextbox.h     | 148 ++++++++++++++++++++++++++++++++++++++++
+ redalert/bugdlg.cpp     |  44 ++++++------
+ tiberiandawn/bugdlg.cpp |  44 ++++++------
+ 3 files changed, 186 insertions(+), 50 deletions(-)
+ create mode 100644 common/bugtextbox.h
+
+diff --git a/common/bugtextbox.h b/common/bugtextbox.h
+new file mode 100644
+index 0000000..90f1ad5
+--- /dev/null
++++ b/common/bugtextbox.h
+@@ -0,0 +1,148 @@
++// A text box of several lines for the bug report dialog (Amiga): the text is one string, long text goes to the next
++// line by itself (at a space when it can, in the middle of a word when a word is longer than the line). Made on the
++// game's own EditClass, so it looks like it and takes the keyboard the same way. Return is not a line break: it ends
++// the input like in every edit box of the game (the dialog sends the report then).
++// Include after the game's function.h and define BUGBOX_SET_FONT(flags) first: it sets the font of the box (the call
++// of Fancy_Text_Print with no text; its arguments differ between the two games).
++#ifndef BUGTEXTBOX_H
++#define BUGTEXTBOX_H
++
++#include "edit.h"
++
++#ifndef BUGBOX_SET_FONT
++#error "define BUGBOX_SET_FONT(flags) before including bugtextbox.h"
++#endif
++#include <cctype>
++#include <cstring>
++
++class BugTextBox : public EditClass
++{
++public:
++    BugTextBox(int id, char* text, int max_len, TextPrintType flags, int x, int y, int w, int h)
++        : EditClass(id, text, max_len, flags, x, y, w, h, EditClass::ALPHANUMERIC)
++    {
++    }
++
++protected:
++    enum
++    {
++        MAX_LINES = 40
++    };
++
++    // The font of the box (the width of the text is measured with the font that was used last).
++    void Use_Font()
++    {
++        BUGBOX_SET_FONT(TextFlags);
++    }
++
++    int Line_Height() const
++    {
++        return FontHeight + 1;
++    }
++
++    int Max_Lines() const
++    {
++        int n = (Height - 2) / Line_Height();
++        return n < 1 ? 1 : (n > MAX_LINES - 1 ? MAX_LINES - 1 : n);
++    }
++
++    // The text cut into lines that fit the width of the box: start and length of each; returns the number of lines.
++    int Wrap(const char* s, int* start, int* length) const
++    {
++        const int maxw = Width - 4;
++        int total = (int)std::strlen(s);
++        int n = 0;
++        int i = 0;
++        while (i < total && n < MAX_LINES) {
++            char buf[160];
++            int j = i;
++            int k = 0;
++            int last_space = -1;
++            while (j < total && k < (int)sizeof(buf) - 2) {
++                buf[k] = s[j];
++                buf[k + 1] = 0;
++                if ((int)String_Pixel_Width(buf) > maxw) {
++                    break;
++                }
++                if (s[j] == ' ') {
++                    last_space = j;
++                }
++                j++;
++                k++;
++            }
++            int end = j;
++            if (j < total && last_space > i) {
++                end = last_space + 1; // the word that does not fit goes to the next line
++            }
++            if (end <= i) {
++                end = i + 1;
++            }
++            start[n] = i;
++            length[n] = end - i;
++            n++;
++            i = end;
++        }
++        return n;
++    }
++
++    virtual void Draw_Text(char const* text)
++    {
++        Use_Font();
++        TextPrintType flags = Has_Focus() ? TPF_BRIGHT_COLOR : (TextPrintType)0;
++        int start[MAX_LINES], length[MAX_LINES];
++        int n = Wrap(text, start, length);
++        int lh = Line_Height();
++        for (int i = 0; i < n; i++) {
++            char line[160];
++            int len = length[i] < (int)sizeof(line) - 1 ? length[i] : (int)sizeof(line) - 1;
++            std::memcpy(line, text + start[i], len);
++            line[len] = 0;
++            Conquer_Clip_Text_Print(line, X + 1, Y + 1 + i * lh, Color, TBLACK, TextFlags | flags, Width - 2);
++        }
++        if (Has_Focus() && Length < MaxLength) {
++            // the cursor: after the last line, or at the start of the next one when that line is full
++            int row = n > 0 ? n - 1 : 0;
++            int cx = 0;
++            if (n > 0) {
++                char line[160];
++                int len = length[row] < (int)sizeof(line) - 1 ? length[row] : (int)sizeof(line) - 1;
++                std::memcpy(line, text + start[row], len);
++                line[len] = 0;
++                cx = (int)String_Pixel_Width(line);
++            }
++            if (cx + (int)String_Pixel_Width("_") >= Width - 3) {
++                row++;
++                cx = 0;
++            }
++            if ((row + 1) * lh <= Height) {
++                Conquer_Clip_Text_Print("_", X + 1 + cx, Y + 1 + row * lh, Color, TBLACK, TextFlags | flags);
++            }
++        }
++    }
++
++    virtual bool Handle_Key(KeyASCIIType ascii)
++    {
++        if (ascii == 0 || ascii == KA_RETURN || ascii == KA_BACKSPACE) {
++            return EditClass::Handle_Key(ascii);
++        }
++        if (Length >= MaxLength || (!isgraph(ascii) && ascii != ' ')) {
++            return true;
++        }
++        if (ascii == ' ' && (Length == 0 || String[Length - 1] == ' ')) {
++            return true; // no space at the start and no two spaces in a row
++        }
++        Use_Font();
++        String[Length] = (char)ascii;
++        String[Length + 1] = '\0';
++        int start[MAX_LINES], length[MAX_LINES];
++        if (Wrap(String, start, length) > Max_Lines()) {
++            String[Length] = '\0'; // the box is full
++            return true;
++        }
++        Length++;
++        Flag_To_Redraw();
++        return true;
++    }
++};
++
++#endif
+diff --git a/redalert/bugdlg.cpp b/redalert/bugdlg.cpp
+index 7847cd4..fd7416e 100644
+--- a/redalert/bugdlg.cpp
++++ b/redalert/bugdlg.cpp
+@@ -1,17 +1,19 @@
+ // F10 on the Amiga: a bug report. The state of the game is written to PROGDIR:user (bugNNN.txt, a picture of the screen,
+ // a saved game); with a TCP/IP stack a dialog in the style of the game's menus asks for an e-mail address (optional) and
+-// a few words about the problem and sends all to the game server (common/report_amiga.cpp). Without the stack the files
++// a few lines about the problem and sends all to the game server (common/report_amiga.cpp). Without the stack the files
+ // only stay in the drawer.
+ #ifdef __amigaos__
+ #include "function.h"
+ #include "msgbox.h"
+ #include "edit.h"
+ #include "textbtn.h"
+-#define CNC_PORT_VERSION "0.3"
++#define CNC_PORT_VERSION "0.4"
+ // Shell `Version` command; the release number is bumped for every build given to users.
+ extern "C" const char amiga_version_tag[] __attribute__((used)) = "$VER: RedAlert " CNC_PORT_VERSION " (24.11.2026)";
+ #include "../common/report_amiga.h"
+ #include "common/framelimit.h"
++#define BUGBOX_SET_FONT(flags) Fancy_Text_Print(TXT_NONE, 0, 0, nullptr, TBLACK, flags)
++#include "../common/bugtextbox.h"
+ #include <cstdio>
+ #include <cstring>
+ 
+@@ -80,6 +82,8 @@ static bool Bug_Dialog(char* email, int email_size, char* text, int text_size)
+     int d_button_x = d_dialog_cx - d_button_w - d_margin;
+     int d_button_y = d_dialog_y + d_dialog_h - d_button_h - d_margin;
+     int d_cancel_x = d_dialog_cx + d_margin;
++    int d_box_h = 43 * factor;
++    int y_hint = y_edit1 + d_box_h + 3 * factor;
+ 
+     enum
+     {
+@@ -87,12 +91,10 @@ static bool Bug_Dialog(char* email, int email_size, char* text, int text_size)
+         BUTTON_CANCEL,
+         BUTTON_E0,
+         BUTTON_E1,
+-        BUTTON_E2,
+-        BUTTON_E3,
+     };
+ 
+-    char line[3][96];
+-    std::memset(line, 0, sizeof(line));
++    char textbuf[300];
++    std::memset(textbuf, 0, sizeof(textbuf));
+     char emailbuf[64];
+     std::strncpy(emailbuf, email, sizeof(emailbuf) - 1);
+     emailbuf[sizeof(emailbuf) - 1] = 0;
+@@ -102,15 +104,13 @@ static bool Bug_Dialog(char* email, int email_size, char* text, int text_size)
+     TextButtonClass cancelbtn(BUTTON_CANCEL, "CANCEL", bf, d_cancel_x, d_button_y, d_button_w);
+     TextPrintType ef = TPF_TEXT;
+     EditClass edit0(BUTTON_E0, emailbuf, 60, ef, d_edit_x, y_edit0, d_edit_w, -1, EditClass::ALPHANUMERIC);
+-    EditClass edit1(BUTTON_E1, line[0], 90, ef, d_edit_x, y_edit1, d_edit_w, -1, EditClass::ALPHANUMERIC);
+-    EditClass edit2(BUTTON_E2, line[1], 90, ef, d_edit_x, y_edit1 + d_edit_h + 2 * factor, d_edit_w, -1, EditClass::ALPHANUMERIC);
+-    EditClass edit3(BUTTON_E3, line[2], 90, ef, d_edit_x, y_edit1 + 2 * (d_edit_h + 2 * factor), d_edit_w, -1, EditClass::ALPHANUMERIC);
+-    EditClass* edits[4] = {&edit0, &edit1, &edit2, &edit3};
++    BugTextBox edit1(BUTTON_E1, textbuf, 290, ef, d_edit_x, y_edit1, d_edit_w, d_box_h);
++    EditClass* edits[2] = {&edit0, &edit1};
+ 
+     Set_Logic_Page(SeenBuff);
+     ControlClass* commands = &sendbtn;
+     cancelbtn.Add_Tail(*commands);
+-    for (int i = 0; i < 4; i++) {
++    for (int i = 0; i < 2; i++) {
+         edits[i]->Add_Tail(*commands);
+     }
+ 
+@@ -134,6 +134,7 @@ static bool Bug_Dialog(char* email, int email_size, char* text, int text_size)
+             Draw_Caption("BUG REPORT", d_dialog_x, d_dialog_y, d_dialog_w);
+             Fancy_Text_Print("YOUR E-MAIL (OPTIONAL):", d_edit_x, y_label1, GadgetClass::Get_Color_Scheme(), TBLACK, ef);
+             Fancy_Text_Print("WHAT HAPPENED:", d_edit_x, y_label2, GadgetClass::Get_Color_Scheme(), TBLACK, ef);
++            Fancy_Text_Print("ENTER SENDS, ESC CANCELS", d_edit_x, y_hint, GadgetClass::Get_Color_Scheme(), TBLACK, ef);
+             commands->Flag_List_To_Redraw();
+             Show_Mouse();
+             display = false;
+@@ -146,14 +147,12 @@ static bool Bug_Dialog(char* email, int email_size, char* text, int text_size)
+         }
+         // Return in a field goes to the next one (in the last one it sends), Tab goes on too
+         int from = -1;
+-        for (int i = 0; i < 3; i++) {
+-            if (input == (KeyNumType)((BUTTON_E0 + i) | KN_BUTTON)) {
+-                from = i;
+-            }
++        if (input == (KeyNumType)(BUTTON_E0 | KN_BUTTON)) {
++            from = 0;
+         }
+         if (input == KN_TAB) {
+             from = focus;
+-            for (int i = 0; i < 4; i++) {
++            for (int i = 0; i < 2; i++) {
+                 if (edits[i]->Has_Focus()) {
+                     from = i;
+                 }
+@@ -161,22 +160,17 @@ static bool Bug_Dialog(char* email, int email_size, char* text, int text_size)
+         }
+         if (from >= 0) {
+             edits[from]->Clear_Focus();
+-            focus = (from + 1) & 3;
++            focus = (from + 1) & 1;
+             set_focus = true;
+             continue;
+         }
+-        if (input == (KeyNumType)(BUTTON_E3 | KN_BUTTON) || input == KN_RETURN) {
++        if (input == (KeyNumType)(BUTTON_E1 | KN_BUTTON) || input == KN_RETURN) {
+             input = (KeyNumType)(BUTTON_SEND | KN_BUTTON);
+         }
+         switch (input) {
+         case (BUTTON_SEND | KN_BUTTON): {
+-            int len = 0;
+-            text[0] = 0;
+-            for (int i = 0; i < 3; i++) {
+-                if (line[i][0]) {
+-                    len += std::snprintf(text + len, text_size - len, "%s%s", len ? " " : "", line[i]);
+-                }
+-            }
++            std::strncpy(text, textbuf, text_size - 1);
++            text[text_size - 1] = 0;
+             std::strncpy(email, emailbuf, email_size - 1);
+             email[email_size - 1] = 0;
+             send = true;
+diff --git a/tiberiandawn/bugdlg.cpp b/tiberiandawn/bugdlg.cpp
+index d031261..51a4073 100644
+--- a/tiberiandawn/bugdlg.cpp
++++ b/tiberiandawn/bugdlg.cpp
+@@ -1,14 +1,16 @@
+ // F10 on the Amiga: a bug report. The state of the game is written to PROGDIR:user (bugNNN.txt, a picture of the screen,
+ // a saved game); with a TCP/IP stack a dialog in the style of the game's menus asks for an e-mail address (optional) and
+-// a few words about the problem and sends all to the game server (common/report_amiga.cpp). Without the stack the files
++// a few lines about the problem and sends all to the game server (common/report_amiga.cpp). Without the stack the files
+ // only stay in the drawer.
+ #ifdef __amigaos__
+ #include "function.h"
+-#define CNC_PORT_VERSION "0.3"
++#define CNC_PORT_VERSION "0.4"
+ // Shell `Version` command; the release number is bumped for every build given to users.
+ extern "C" const char amiga_version_tag[] __attribute__((used)) = "$VER: TiberianDawn " CNC_PORT_VERSION " (24.11.2026)";
+ #include "../common/report_amiga.h"
+ #include "common/framelimit.h"
++#define BUGBOX_SET_FONT(flags) Fancy_Text_Print(TXT_NONE, 0, 0, TBLACK, TBLACK, flags)
++#include "../common/bugtextbox.h"
+ #include <cstdio>
+ #include <cstring>
+ 
+@@ -81,6 +83,8 @@ static bool Bug_Dialog(char* email, int email_size, char* text, int text_size)
+     int d_button_x = d_dialog_cx - d_button_w - d_margin;
+     int d_button_y = d_dialog_y + d_dialog_h - d_button_h - d_margin;
+     int d_cancel_x = d_dialog_cx + d_margin;
++    int d_box_h = 43 * factor;
++    int y_hint = y_edit1 + d_box_h + 3 * factor;
+ 
+     enum
+     {
+@@ -88,12 +92,10 @@ static bool Bug_Dialog(char* email, int email_size, char* text, int text_size)
+         BUTTON_CANCEL,
+         BUTTON_E0,
+         BUTTON_E1,
+-        BUTTON_E2,
+-        BUTTON_E3,
+     };
+ 
+-    char line[3][96];
+-    std::memset(line, 0, sizeof(line));
++    char textbuf[300];
++    std::memset(textbuf, 0, sizeof(textbuf));
+     char emailbuf[64];
+     std::strncpy(emailbuf, email, sizeof(emailbuf) - 1);
+     emailbuf[sizeof(emailbuf) - 1] = 0;
+@@ -103,15 +105,13 @@ static bool Bug_Dialog(char* email, int email_size, char* text, int text_size)
+     TextButtonClass cancelbtn(BUTTON_CANCEL, "CANCEL", bf, d_cancel_x, d_button_y, d_button_w);
+     TextPrintType ef = (TextPrintType)(TPF_6PT_GRAD | TPF_USE_GRAD_PAL | TPF_NOSHADOW);
+     EditClass edit0(BUTTON_E0, emailbuf, 60, ef, d_edit_x, y_edit0, d_edit_w, -1, EditClass::ALPHANUMERIC);
+-    EditClass edit1(BUTTON_E1, line[0], 90, ef, d_edit_x, y_edit1, d_edit_w, -1, EditClass::ALPHANUMERIC);
+-    EditClass edit2(BUTTON_E2, line[1], 90, ef, d_edit_x, y_edit1 + d_edit_h + 2 * factor, d_edit_w, -1, EditClass::ALPHANUMERIC);
+-    EditClass edit3(BUTTON_E3, line[2], 90, ef, d_edit_x, y_edit1 + 2 * (d_edit_h + 2 * factor), d_edit_w, -1, EditClass::ALPHANUMERIC);
+-    EditClass* edits[4] = {&edit0, &edit1, &edit2, &edit3};
++    BugTextBox edit1(BUTTON_E1, textbuf, 290, ef, d_edit_x, y_edit1, d_edit_w, d_box_h);
++    EditClass* edits[2] = {&edit0, &edit1};
+ 
+     Set_Logic_Page(SeenBuff);
+     ControlClass* commands = &sendbtn;
+     cancelbtn.Add_Tail(*commands);
+-    for (int i = 0; i < 4; i++) {
++    for (int i = 0; i < 2; i++) {
+         edits[i]->Add_Tail(*commands);
+     }
+ 
+@@ -135,6 +135,7 @@ static bool Bug_Dialog(char* email, int email_size, char* text, int text_size)
+             Fancy_Text_Print("BUG REPORT", d_dialog_cx, y_caption, CC_GREEN, TBLACK, tc);
+             Fancy_Text_Print("YOUR E-MAIL (OPTIONAL):", d_edit_x, y_label1, CC_GREEN, TBLACK, ef);
+             Fancy_Text_Print("WHAT HAPPENED:", d_edit_x, y_label2, CC_GREEN, TBLACK, ef);
++            Fancy_Text_Print("ENTER SENDS, ESC CANCELS", d_edit_x, y_hint, CC_GREEN, TBLACK, ef);
+             commands->Flag_List_To_Redraw();
+             Show_Mouse();
+             display = false;
+@@ -147,14 +148,12 @@ static bool Bug_Dialog(char* email, int email_size, char* text, int text_size)
+         }
+         // Return in a field goes to the next one (in the last one it sends), Tab goes on too
+         int from = -1;
+-        for (int i = 0; i < 3; i++) {
+-            if (input == (KeyNumType)((BUTTON_E0 + i) | KN_BUTTON)) {
+-                from = i;
+-            }
++        if (input == (KeyNumType)(BUTTON_E0 | KN_BUTTON)) {
++            from = 0;
+         }
+         if (input == KN_TAB) {
+             from = focus;
+-            for (int i = 0; i < 4; i++) {
++            for (int i = 0; i < 2; i++) {
+                 if (edits[i]->Has_Focus()) {
+                     from = i;
+                 }
+@@ -162,22 +161,17 @@ static bool Bug_Dialog(char* email, int email_size, char* text, int text_size)
+         }
+         if (from >= 0) {
+             edits[from]->Clear_Focus();
+-            focus = (from + 1) & 3;
++            focus = (from + 1) & 1;
+             set_focus = true;
+             continue;
+         }
+-        if (input == (KeyNumType)(BUTTON_E3 | KN_BUTTON) || input == KN_RETURN) {
++        if (input == (KeyNumType)(BUTTON_E1 | KN_BUTTON) || input == KN_RETURN) {
+             input = (KeyNumType)(BUTTON_SEND | KN_BUTTON);
+         }
+         switch (input) {
+         case (BUTTON_SEND | KN_BUTTON): {
+-            int len = 0;
+-            text[0] = 0;
+-            for (int i = 0; i < 3; i++) {
+-                if (line[i][0]) {
+-                    len += std::snprintf(text + len, text_size - len, "%s%s", len ? " " : "", line[i]);
+-                }
+-            }
++            std::strncpy(text, textbuf, text_size - 1);
++            text[text_size - 1] = 0;
+             std::strncpy(email, emailbuf, email_size - 1);
+             email[email_size - 1] = 0;
+             send = true;
+-- 
+2.45.2.windows.1
+

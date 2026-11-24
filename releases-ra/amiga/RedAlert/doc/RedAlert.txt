@@ -1,4 +1,4 @@
-COMMAND & CONQUER: RED ALERT na Amige (karty Warp)                      wydanie 0.3
+COMMAND & CONQUER: RED ALERT na Amige (karty Warp)                      wydanie 0.4
 ==========================================================================
 
 Port silnika GPL "Vanilla Conquer" (otwarte zrodla gry firmy Electronic Arts)
@@ -18,7 +18,7 @@ WYMAGANIA
   Zgloszenia bledow z gry wymagaja stosu TCP/IP (Roadshow, Miami, Genesis).
 
 INSTALACJA
-  UnZip RedAlert-0.3.zip -d Work:Games
+  UnZip RedAlert-0.4.zip -d Work:Games
   Pliki gry wlozyc do RedAlert/data (darmowe dane Electronic Arts, NIE
   dolaczone):
     Pliki z Command & Conquer: Red Alert (darmowe dane wydane przez Electronic Arts, z plyty
@@ -46,9 +46,10 @@ USTAWIENIA (Tool Types ikony, usun nawiasy, zeby wlaczyc)
 ZGLASZANIE BLEDOW (F10)
   Klawisz F10 w trakcie gry zapisuje stan gry (w szufladzie "user": bugNNN.txt,
   bugNNN-screen.bmp, bugNNN.sav) i - jesli dziala stos TCP/IP - otwiera okno
-  zgloszenia: adres e-mail (nieobowiazkowy, zapamietany) i kilka slow o
-  problemie (Enter przechodzi do nastepnego pola, w ostatnim wysyla; Esc
-  zamyka). Przycisk SEND wysyla zgloszenie na serwer gier: e-mail i opis,
+  zgloszenia: adres e-mail (nieobowiazkowy, zapamietany) i pole na opis
+  problemu (dlugi tekst przechodzi sam do nastepnej linii; Enter w polu e-mail
+  przechodzi do opisu, Enter w opisie wysyla; Esc zamyka). Przycisk SEND
+  wysyla zgloszenie na serwer gier: e-mail i opis,
   numer wydania, opis Amigi (procesor, Kickstart, pamiec, karta Warp), obraz
   ekranu i zapis gry. Numer zgloszenia pojawia sie po wyslaniu. Bez stosu
   TCP/IP F10 zapisuje tylko pliki - mozna je przeslac autorowi recznie.

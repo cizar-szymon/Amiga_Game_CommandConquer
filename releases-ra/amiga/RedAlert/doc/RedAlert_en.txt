@@ -1,4 +1,4 @@
-COMMAND & CONQUER: RED ALERT for the Amiga (Warp cards)                 release 0.3
+COMMAND & CONQUER: RED ALERT for the Amiga (Warp cards)                 release 0.4
 ==========================================================================
 
 Port of the GPL engine "Vanilla Conquer" (the open-source game of Electronic
@@ -19,7 +19,7 @@ REQUIREMENTS
   Genesis).
 
 INSTALLATION
-  UnZip RedAlert-0.3.zip -d Work:Games
+  UnZip RedAlert-0.4.zip -d Work:Games
   Put the game files into RedAlert/data (the freeware data from Electronic Arts,
   NOT included):
     The files of Command & Conquer: Red Alert (the freeware data released by Electronic Arts,
@@ -48,9 +48,10 @@ BUG REPORTS (F10)
   The F10 key during the game writes the state of the game (in the drawer
   "user": bugNNN.txt, bugNNN-screen.bmp, bugNNN.sav) and - when a TCP/IP stack
   is running - opens the report window: an e-mail address (optional,
-  remembered) and a few words about the problem (Return goes to the next
-  field and sends in the last one; Esc closes). SEND sends the report to the
-  game server: e-mail and words, release number, description of the Amiga
+  remembered) and a box for the description of the problem (long text goes to
+  the next line by itself; Return in the e-mail field goes to the description,
+  Return in the description sends; Esc closes). SEND sends the report to the
+  game server: e-mail and description, release number, description of the Amiga
   (CPU, Kickstart, memory, Warp card), the picture of the screen and the
   saved game. The number of the report appears after sending. Without a
   TCP/IP stack F10 only writes the files - they can be sent to the author by

@@ -98,9 +98,10 @@ USTAWIENIA (Tool Types ikony, usun nawiasy, zeby wlaczyc)
 ZGLASZANIE BLEDOW (F10)
   Klawisz F10 w trakcie gry zapisuje stan gry (w szufladzie "user": bugNNN.txt,
   bugNNN-screen.bmp, bugNNN.sav) i - jesli dziala stos TCP/IP - otwiera okno
-  zgloszenia: adres e-mail (nieobowiazkowy, zapamietany) i kilka slow o
-  problemie (Enter przechodzi do nastepnego pola, w ostatnim wysyla; Esc
-  zamyka). Przycisk SEND wysyla zgloszenie na serwer gier: e-mail i opis,
+  zgloszenia: adres e-mail (nieobowiazkowy, zapamietany) i pole na opis
+  problemu (dlugi tekst przechodzi sam do nastepnej linii; Enter w polu e-mail
+  przechodzi do opisu, Enter w opisie wysyla; Esc zamyka). Przycisk SEND
+  wysyla zgloszenie na serwer gier: e-mail i opis,
   numer wydania, opis Amigi (procesor, Kickstart, pamiec, karta Warp), obraz
   ekranu i zapis gry. Numer zgloszenia pojawia sie po wyslaniu. Bez stosu
   TCP/IP F10 zapisuje tylko pliki - mozna je przeslac autorowi recznie.
@@ -155,9 +156,10 @@ BUG REPORTS (F10)
   The F10 key during the game writes the state of the game (in the drawer
   "user": bugNNN.txt, bugNNN-screen.bmp, bugNNN.sav) and - when a TCP/IP stack
   is running - opens the report window: an e-mail address (optional,
-  remembered) and a few words about the problem (Return goes to the next
-  field and sends in the last one; Esc closes). SEND sends the report to the
-  game server: e-mail and words, release number, description of the Amiga
+  remembered) and a box for the description of the problem (long text goes to
+  the next line by itself; Return in the e-mail field goes to the description,
+  Return in the description sends; Esc closes). SEND sends the report to the
+  game server: e-mail and description, release number, description of the Amiga
   (CPU, Kickstart, memory, Warp card), the picture of the screen and the
   saved game. The number of the report appears after sending. Without a
   TCP/IP stack F10 only writes the files - they can be sent to the author by
@@ -175,6 +177,11 @@ Jak zglosic blad: klawisz F10 w grze (okno zgloszenia, wymaga stosu TCP/IP) albo
 numer wydania (Shell: Version {dir}), opis Amigi i karty oraz co sie robilo.
 
 {v}  (24.11.2026)
+  - Okno zgloszenia bledu (F10): jedno pole na opis problemu; dlugi tekst
+    przechodzi sam do nastepnej linii. Enter w polu opisu wysyla zgloszenie,
+    Esc je anuluje.
+
+0.3  (24.11.2026)
   - Straznik zawieszen zapisuje RAM:cnc-hang.txt dopiero wtedy, gdy gra nie
     odpowiada przez 10 sekund (dluzsze wczytywanie misji go nie uruchamia).
 
@@ -196,6 +203,11 @@ stack) or give the release number (Shell: Version {dir}), your Amiga and card,
 and what you were doing.
 
 {v}  (24.11.2026)
+  - The bug report window (F10): one box for the description; long text
+    goes to the next line by itself. Enter in the box sends the report,
+    Esc cancels it.
+
+0.3  (24.11.2026)
   - The hang guard writes RAM:cnc-hang.txt only when the game does not respond
     for 10 seconds (a long mission load does not start it).
 
@@ -206,7 +218,7 @@ and what you were doing.
   - Sound and music through the Amiga's own audio chip (Paula, default) or AHI;
     Tool Types SOUND=PAULA / AHI / OFF. The sound of the movies takes the same way.
   - Bug reports with the F10 key: a window in the style of the game's menus, sent
-    to the game server (e-mail, words, game state, picture of the screen); without
+    to the game server (e-mail, description, game state, picture of the screen); without
     a TCP/IP stack only the files are written.
   - Start from the icon or from a Shell; Ctrl-C closes the game.
 '''

@@ -4,6 +4,11 @@ COMMAND & CONQUER: RED ALERT na Amige - historia wydan
 Jak zglosic blad: klawisz F10 w grze (okno zgloszenia, wymaga stosu TCP/IP) albo
 numer wydania (Shell: Version RedAlert), opis Amigi i karty oraz co sie robilo.
 
+0.4  (24.11.2026)
+  - Okno zgloszenia bledu (F10): jedno pole na opis problemu; dlugi tekst
+    przechodzi sam do nastepnej linii. Enter w polu opisu wysyla zgloszenie,
+    Esc je anuluje.
+
 0.3  (24.11.2026)
   - Straznik zawieszen zapisuje RAM:cnc-hang.txt dopiero wtedy, gdy gra nie
     odpowiada przez 10 sekund (dluzsze wczytywanie misji go nie uruchamia).
