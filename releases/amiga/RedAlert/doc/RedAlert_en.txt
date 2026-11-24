@@ -1,4 +1,4 @@
-COMMAND & CONQUER: RED ALERT for the Amiga (Warp cards)                 release 0.2
+COMMAND & CONQUER: RED ALERT for the Amiga (Warp cards)                 release 0.3
 ==========================================================================
 
 Port of the GPL engine "Vanilla Conquer" (the open-source game of Electronic
@@ -19,7 +19,7 @@ REQUIREMENTS
   Genesis).
 
 INSTALLATION
-  UnZip RedAlert-0.2.zip -d Work:Games
+  UnZip RedAlert-0.3.zip -d Work:Games
   Put the game files into RedAlert/data (the freeware data from Electronic Arts,
   NOT included):
     The files of Command & Conquer: Red Alert (the freeware data released by Electronic Arts,

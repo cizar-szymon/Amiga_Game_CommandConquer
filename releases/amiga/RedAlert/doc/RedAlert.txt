@@ -1,4 +1,4 @@
-COMMAND & CONQUER: RED ALERT na Amige (karty Warp)                      wydanie 0.2
+COMMAND & CONQUER: RED ALERT na Amige (karty Warp)                      wydanie 0.3
 ==========================================================================
 
 Port silnika GPL "Vanilla Conquer" (otwarte zrodla gry firmy Electronic Arts)
@@ -18,7 +18,7 @@ WYMAGANIA
   Zgloszenia bledow z gry wymagaja stosu TCP/IP (Roadshow, Miami, Genesis).
 
 INSTALACJA
-  UnZip RedAlert-0.2.zip -d Work:Games
+  UnZip RedAlert-0.3.zip -d Work:Games
   Pliki gry wlozyc do RedAlert/data (darmowe dane Electronic Arts, NIE
   dolaczone):
     Pliki z Command & Conquer: Red Alert (darmowe dane wydane przez Electronic Arts, z plyty
