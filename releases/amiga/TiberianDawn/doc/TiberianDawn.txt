@@ -45,8 +45,8 @@ USTAWIENIA (Tool Types ikony, usun nawiasy, zeby wlaczyc)
   Dzwiek filmow idzie ta sama droga co dzwiek gry.
 
 ZGLASZANIE BLEDOW (F10)
-  Klawisz F10 w trakcie gry zapisuje stan gry (w szufladzie "user": bugNNN.txt,
-  bugNNN-screen.bmp, bugNNN.sav) i - jesli dziala stos TCP/IP - otwiera okno
+  Klawisz F10 w trakcie gry zapisuje stan gry (w szufladzie "user", w osobnej
+  szufladzie bugNNN: bugNNN.txt, bugNNN-screen.bmp, bugNNN.sav) i - jesli dziala stos TCP/IP - otwiera okno
   zgloszenia: adres e-mail (nieobowiazkowy, zapamietany) i pole na opis
   problemu (dlugi tekst przechodzi sam do nastepnej linii; Enter w polu e-mail
   przechodzi do opisu, Enter w opisie wysyla; Esc zamyka). Przycisk SEND

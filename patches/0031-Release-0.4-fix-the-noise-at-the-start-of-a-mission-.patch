@@ -1,7 +1,7 @@
 From e464525bd7477a309ca8e13c3b29b8724cff4bab Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Tue, 24 Nov 2026 17:23:48 +0100
-Subject: [PATCH 31/31] Release 0.4: fix the noise at the start of a mission
+Subject: [PATCH 31/32] Release 0.4: fix the noise at the start of a mission
  (stale stream buffers on a tracker), credits tick once per frame, Paula late
  counter and paula N option
 

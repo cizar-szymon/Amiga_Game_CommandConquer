@@ -1,0 +1,138 @@
+From 51d55435149b16f7553f884e21fb3da0c1319f55 Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Tue, 24 Nov 2026 19:05:42 +0100
+Subject: [PATCH 32/32] Release 0.4: every bug report in a drawer of its own
+ (user/bugNNN/)
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017g4PoTADs6Z5A5aMeTycB9
+---
+ common/bugfiles_amiga.cpp | 34 +++++++++++++++++++++++++++++-----
+ redalert/bugdlg.cpp       |  6 +++---
+ tiberiandawn/bugdlg.cpp   |  6 +++---
+ 3 files changed, 35 insertions(+), 11 deletions(-)
+
+diff --git a/common/bugfiles_amiga.cpp b/common/bugfiles_amiga.cpp
+index 195af2d..9e07a48 100644
+--- a/common/bugfiles_amiga.cpp
++++ b/common/bugfiles_amiga.cpp
+@@ -2,6 +2,8 @@
+ // The game specific part (the dialog in the style of the game, its state text) is in tiberiandawn/bugdlg.cpp and
+ // redalert/bugdlg.cpp.
+ #include "paths.h"
++#include <dos/dos.h>
++#include <proto/dos.h>
+ #include <cstdio>
+ #include <string>
+ #include <cstdlib>
+@@ -25,15 +27,37 @@ static bool File_There(const char* name)
+     return false;
+ }
+ 
+-// The first free number 1..999 of PROGDIR:user/bugNNN.txt, 0 when all are used.
++static bool Dir_There(const char* name)
++{
++    BPTR lock = Lock((CONST_STRPTR)name, ACCESS_READ);
++    if (lock) {
++        UnLock(lock);
++        return true;
++    }
++    return false;
++}
++
++// Every report has a drawer of its own in the user drawer: user/bugNNN/ with bugNNN.txt, bugNNN-screen.bmp and
++// bugNNN.sav. The first free number 1..999 (no drawer bugNNN and no file bugNNN.txt of the older releases that put
++// the files straight into the user drawer), 0 when all are used; the drawer is made.
+ int Bug_Next_Number()
+ {
+-    char name[64];
++    char name[96];
+     for (int n = 1; n < 1000; n++) {
+         std::snprintf(name, sizeof(name), "%sbug%03d.txt", Bug_Dir().c_str(), n);
+-        if (!File_There(name)) {
++        if (File_There(name)) {
++            continue;
++        }
++        std::snprintf(name, sizeof(name), "%sbug%03d", Bug_Dir().c_str(), n);
++        if (Dir_There(name)) {
++            continue;
++        }
++        BPTR lock = CreateDir((CONST_STRPTR)name);
++        if (lock) {
++            UnLock(lock);
+             return n;
+         }
++        return 0; // the drawer cannot be made (no room, write protected): no report
+     }
+     return 0;
+ }
+@@ -100,8 +124,8 @@ void Bug_Email_Save(const char* email)
+     }
+ }
+ 
+-// Full path of a file of report number n (suffix like ".txt", "-screen.bmp").
++// Full path of a file of report number n (suffix like ".txt", "-screen.bmp"), in its drawer user/bugNNN/.
+ void Bug_Path(char* out, int size, int n, const char* suffix)
+ {
+-    std::snprintf(out, size, "%sbug%03d%s", Bug_Dir().c_str(), n, suffix);
++    std::snprintf(out, size, "%sbug%03d/bug%03d%s", Bug_Dir().c_str(), n, n, suffix);
+ }
+diff --git a/redalert/bugdlg.cpp b/redalert/bugdlg.cpp
+index afae857..3df313c 100644
+--- a/redalert/bugdlg.cpp
++++ b/redalert/bugdlg.cpp
+@@ -1,4 +1,4 @@
+-// F10 on the Amiga: a bug report. The state of the game is written to PROGDIR:user (bugNNN.txt, a picture of the screen,
++// F10 on the Amiga: a bug report. The state of the game is written to PROGDIR:user (the drawer bugNNN with bugNNN.txt, a picture of the screen,
+ // a saved game); with a TCP/IP stack a dialog in the style of the game's menus asks for an e-mail address (optional) and
+ // a few lines about the problem and sends all to the game server (common/report_amiga.cpp). Without the stack the files
+ // only stay in the drawer.
+@@ -237,7 +237,7 @@ void Amiga_Bug_Report()
+     Bug_Path(sav, sizeof(sav), n, ".sav");
+     Amiga_Write_Screen_BMP(bmp);
+     char savname[32];
+-    std::snprintf(savname, sizeof(savname), "bug%03d.sav", n);
++    std::snprintf(savname, sizeof(savname), "bug%03d/bug%03d.sav", n, n); // in the drawer of the report
+     Bug_Write_Text(n, txt);
+ 
+     bool net = Report_Network() != 0;
+@@ -245,7 +245,7 @@ void Amiga_Bug_Report()
+     if (!net) {
+         Bug_Save(savname);
+         char msg[160];
+-        std::snprintf(msg, sizeof(msg), "Bug report %d saved in the user drawer (bug%03d.*). No TCP/IP stack: it cannot be sent.", n, n);
++        std::snprintf(msg, sizeof(msg), "Bug report %d saved in the drawer bug%03d of the user drawer. No TCP/IP stack: it cannot be sent.", n, n);
+         WWMessageBox().Process(msg);
+         Bug_Redraw_Map();
+         Map.Flag_To_Redraw(true);
+diff --git a/tiberiandawn/bugdlg.cpp b/tiberiandawn/bugdlg.cpp
+index e825e93..4108fd0 100644
+--- a/tiberiandawn/bugdlg.cpp
++++ b/tiberiandawn/bugdlg.cpp
+@@ -1,4 +1,4 @@
+-// F10 on the Amiga: a bug report. The state of the game is written to PROGDIR:user (bugNNN.txt, a picture of the screen,
++// F10 on the Amiga: a bug report. The state of the game is written to PROGDIR:user (the drawer bugNNN with bugNNN.txt, a picture of the screen,
+ // a saved game); with a TCP/IP stack a dialog in the style of the game's menus asks for an e-mail address (optional) and
+ // a few lines about the problem and sends all to the game server (common/report_amiga.cpp). Without the stack the files
+ // only stay in the drawer.
+@@ -238,7 +238,7 @@ void Amiga_Bug_Report()
+     Bug_Path(sav, sizeof(sav), n, ".sav");
+     Amiga_Write_Screen_BMP(bmp);
+     char savname[32];
+-    std::snprintf(savname, sizeof(savname), "bug%03d.sav", n);
++    std::snprintf(savname, sizeof(savname), "bug%03d/bug%03d.sav", n, n); // in the drawer of the report
+     Bug_Write_Text(n, txt);
+ 
+     bool net = Report_Network() != 0;
+@@ -246,7 +246,7 @@ void Amiga_Bug_Report()
+     if (!net) {
+         Bug_Save(savname);
+         char msg[160];
+-        std::snprintf(msg, sizeof(msg), "Bug report %d saved in the user drawer (bug%03d.*). No TCP/IP stack: it cannot be sent.", n, n);
++        std::snprintf(msg, sizeof(msg), "Bug report %d saved in the drawer bug%03d of the user drawer. No TCP/IP stack: it cannot be sent.", n, n);
+         WWMessageBox().Process(msg);
+         Bug_Redraw_Map();
+         Map.Flag_To_Redraw(true);
+-- 
+2.45.2.windows.1
+

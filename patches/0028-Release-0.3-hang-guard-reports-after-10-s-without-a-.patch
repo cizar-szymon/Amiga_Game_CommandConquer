@@ -1,7 +1,7 @@
 From cd2ed4ee7874144c10a109f6ec4219302c01e0e6 Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Tue, 24 Nov 2026 11:01:00 +0100
-Subject: [PATCH 28/31] Release 0.3: hang guard reports after 10 s without a
+Subject: [PATCH 28/32] Release 0.3: hang guard reports after 10 s without a
  heartbeat
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>

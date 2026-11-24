@@ -51,7 +51,7 @@ EOT
 	python $T/make_doc_icon.py "$R/$N/doc/$f.info" --frame "$T/icon/$pic.png" --crop 0 0 36 44 --transparent --project SYS:Utilities/MultiView --pos "$x" "$y" >/dev/null 2>&1
 done
 cp "$D/${N}_data_ReadMe.txt" "$R/$N/data/ReadMe.txt"
-printf 'Saved games, settings and bug reports (bugNNN.*) of the game are written here.\nZapisy gry, ustawienia i zgloszenia bledow (bugNNN.*) sa zapisywane tutaj.\n' > "$R/$N/user/ReadMe.txt"
+printf 'Saved games, settings and bug reports (one drawer bugNNN for each) of the game are written here.\nZapisy gry, ustawienia i zgloszenia bledow (osobna szuflada bugNNN na kazde) sa zapisywane tutaj.\n' > "$R/$N/user/ReadMe.txt"
 
 mkdir -p private/old
 for f in "$R"/$N-[0-9]*.zip; do

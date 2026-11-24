@@ -96,8 +96,8 @@ USTAWIENIA (Tool Types ikony, usun nawiasy, zeby wlaczyc)
   Dzwiek filmow idzie ta sama droga co dzwiek gry.
 
 ZGLASZANIE BLEDOW (F10)
-  Klawisz F10 w trakcie gry zapisuje stan gry (w szufladzie "user": bugNNN.txt,
-  bugNNN-screen.bmp, bugNNN.sav) i - jesli dziala stos TCP/IP - otwiera okno
+  Klawisz F10 w trakcie gry zapisuje stan gry (w szufladzie "user", w osobnej
+  szufladzie bugNNN: bugNNN.txt, bugNNN-screen.bmp, bugNNN.sav) i - jesli dziala stos TCP/IP - otwiera okno
   zgloszenia: adres e-mail (nieobowiazkowy, zapamietany) i pole na opis
   problemu (dlugi tekst przechodzi sam do nastepnej linii; Enter w polu e-mail
   przechodzi do opisu, Enter w opisie wysyla; Esc zamyka). Przycisk SEND
@@ -154,7 +154,8 @@ SETTINGS (Tool Types of the icon, remove the brackets to switch on)
 
 BUG REPORTS (F10)
   The F10 key during the game writes the state of the game (in the drawer
-  "user": bugNNN.txt, bugNNN-screen.bmp, bugNNN.sav) and - when a TCP/IP stack
+  "user", in a drawer of its own, bugNNN: bugNNN.txt, bugNNN-screen.bmp,
+  bugNNN.sav) and - when a TCP/IP stack
   is running - opens the report window: an e-mail address (optional,
   remembered) and a box for the description of the problem (long text goes to
   the next line by itself; Return in the e-mail field goes to the description,
@@ -182,6 +183,8 @@ numer wydania (Shell: Version {dir}), opis Amigi i karty oraz co sie robilo.
     Esc je anuluje. Okno otwiera sie od razu; stan gry jest zapisywany po
     kliknieciu SEND (komunikat "SAVING THE GAME").
   - Naliczanie kredytow ma jeden wyrazny tik na klatke gry.
+  - Kazde zgloszenie bledu ma wlasna szuflade user/bugNNN z plikami bugNNN.txt,
+    bugNNN-screen.bmp i bugNNN.sav.
 
 0.3  (24.11.2026)
   - Straznik zawieszen zapisuje RAM:cnc-hang.txt dopiero wtedy, gdy gra nie
@@ -210,6 +213,8 @@ and what you were doing.
     Esc cancels it. The window opens at once; the state of the game is
     saved after SEND (message "SAVING THE GAME").
   - The credits counter gives one clear tick for every game frame.
+  - Every bug report has a drawer of its own, user/bugNNN, with bugNNN.txt,
+    bugNNN-screen.bmp and bugNNN.sav.
 
 0.3  (24.11.2026)
   - The hang guard writes RAM:cnc-hang.txt only when the game does not respond
