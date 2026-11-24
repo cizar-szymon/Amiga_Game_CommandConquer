@@ -1,7 +1,7 @@
 From a448da2eebe4fa86f3a826672fa84256bf1dbd8f Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Tue, 24 Nov 2026 13:35:36 +0100
-Subject: [PATCH 30/30] Release 0.4: bug report saves the game after SEND (not
+Subject: [PATCH 30/31] Release 0.4: bug report saves the game after SEND (not
  before the window), faster LCW_Comp (index of 3 bytes), hang guard pause
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>

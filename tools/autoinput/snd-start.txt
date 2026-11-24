@@ -1,0 +1,12 @@
+# sound at the start of a mission (dump) test (TD): menu -> difficulty OK -> mission -> F10 -> fill in the fields -> send
+wait 40
+key esc
+wait 120
+click 320 58
+wait 40
+click 500 242
+wait 200
+click 150 200
+wait 500
+wait 2500
+quit

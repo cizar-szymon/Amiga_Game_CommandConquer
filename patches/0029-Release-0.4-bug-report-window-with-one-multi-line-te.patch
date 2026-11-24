@@ -1,7 +1,7 @@
 From 26c2c11dd37f416772adc286d129494d68bb7a9e Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Tue, 24 Nov 2026 12:34:13 +0100
-Subject: [PATCH 29/30] Release 0.4: bug report window with one multi-line text
+Subject: [PATCH 29/31] Release 0.4: bug report window with one multi-line text
  box (wraps by itself)
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>

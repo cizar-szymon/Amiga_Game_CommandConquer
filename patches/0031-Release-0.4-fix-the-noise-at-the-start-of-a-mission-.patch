@@ -1,0 +1,256 @@
+From e464525bd7477a309ca8e13c3b29b8724cff4bab Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Tue, 24 Nov 2026 17:23:48 +0100
+Subject: [PATCH 31/31] Release 0.4: fix the noise at the start of a mission
+ (stale stream buffers on a tracker), credits tick once per frame, Paula late
+ counter and paula N option
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017g4PoTADs6Z5A5aMeTycB9
+---
+ common/soundio_amiga.cpp  | 52 +++++++++++++++++++++++++++++++++++----
+ common/soundio_common.cpp | 23 +++++++++++++++++
+ redalert/credits.cpp      |  9 ++++++-
+ tiberiandawn/credits.cpp  | 14 ++++++++---
+ 4 files changed, 89 insertions(+), 9 deletions(-)
+
+diff --git a/common/soundio_amiga.cpp b/common/soundio_amiga.cpp
+index c7f5a71..1aad2e2 100644
+--- a/common/soundio_amiga.cpp
++++ b/common/soundio_amiga.cpp
+@@ -34,7 +34,7 @@ struct Library* AHIBase = nullptr;
+ extern struct ExecBase* SysBase;
+ 
+ #define OUT_RATE 22050
+-#define BLK_MAX 1536
++#define BLK_MAX 3072 // up to 139 ms per block at 22 kHz (Paula: a longer block lives through a longer stall of the mixer)
+ static int Blk = 768; // frames per output block: Paula 768 (35 ms), AHI needs more (see Mixer_Main)
+ #define NQ 3      // queued buffers per tracker
+ #define QCAP 16384
+@@ -91,9 +91,14 @@ static volatile int Ready = 0; // 0 starting, 1 ok, -1 failed
+ static volatile bool Quit = false;
+ static BYTE QuitSig = -1;
+ static int AhiBlock = 1024; // frames per AHI sound; read from PROGDIR:sound as 'ahi 1280' for tests
++static int PaulaBlock = 768; // frames per Paula buffer (35 ms); 'paula 1536' in PROGDIR:sound makes it longer (a stall of the mixer up to one buffer is then not heard)
+ static struct Process* MixProc = nullptr;
+ 
+ static unsigned StatBlocks = 0, StatUnderruns = 0;
++static unsigned StatClockJumps = 0;           // gaps of more than 10 s: the 32 bit E-clock of Amiga_Prof_Now() wrapped, not a stall
++static unsigned StatLate = 0;                 // Paula: the mixer woke up too late for a buffer (see Paula_Service)
++static unsigned long StatLateWorst = 0;       // the longest such gap, ms
++static unsigned long long PaulaLastWake = 0;  // E-clock ticks of the previous wake-up of the mixer
+ static time_t StatStart = 0;
+ extern unsigned long long Amiga_Prof_Now();
+ static unsigned long long StatMixTicks = 0;
+@@ -324,11 +329,35 @@ static void Paula_Close()
+ }
+ 
+ // Called every few ms: refills the buffer that has just finished.
++// The mixer wakes up every 4 ms to see whether Paula has finished a buffer. When it is not scheduled for more than
++// the length of a buffer minus 5 ms (35 ms for 768 frames), Paula plays the buffer that has just finished once more, then
++// again: the old sound is heard in a loop until the mixer catches up. Every such gap is counted and the first ones
++// are written to the log with the time since the start of the mixer.
+ static bool Paula_Service(ULONG quit_mask)
+ {
+     if (PaulaHw_Wait(quit_mask)) {
+         return false;
+     }
++    {
++        const unsigned long long now = Amiga_Prof_Now();
++        if (PaulaLastWake != 0) {
++            const unsigned long gap = (unsigned long)((now - PaulaLastWake) * 1000ULL / 709379ULL);
++            if (gap > 10000) {
++                ++StatClockJumps;
++            } else if ((long)gap > (long)(Blk * 1000L / OUT_RATE) - 5) { // the buffer that is queued runs out in Blk / OUT_RATE
++                ++StatLate;
++                if (gap > StatLateWorst) {
++                    StatLateWorst = gap;
++                }
++                if (StatLate <= 40) {
++                    char m[160];
++                    std::snprintf(m, sizeof(m), "paula late #%u at %ld s: the mixer was not scheduled for %lu ms (a buffer lasts %ld ms)", StatLate, (long)(std::time(nullptr) - StatStart), gap, (long)(Blk * 1000L / OUT_RATE));
++                    Log(m);
++                }
++            }
++        }
++        PaulaLastWake = now;
++    }
+     int idx = PaulaHw_Poll();
+     if (idx >= 0) {
+         Paula_Fill(idx);
+@@ -552,7 +581,11 @@ static void Mixer_Main()
+             char tmp[16];
+             int n = 0;
+             if (std::fscanf(nf, "%15s %d", tmp, &n) == 2 && n >= 256 && n <= BLK_MAX) {
+-                AhiBlock = n;
++                if (!std::strcmp(tmp, "paula")) {
++                    PaulaBlock = n & ~1; // the buffers of Paula are an even number of bytes
++                } else {
++                    AhiBlock = n;
++                }
+             }
+             std::fclose(nf);
+         }
+@@ -568,7 +601,7 @@ static void Mixer_Main()
+ 
+     QuitSig = AllocSignal(-1);
+     Backend = MODE_OFF;
+-    Blk = 768;
++    Blk = PaulaBlock;
+     if (want == MODE_PAULA) {
+         if (Paula_Open()) {
+             Backend = MODE_PAULA;
+@@ -583,7 +616,7 @@ static void Mixer_Main()
+             Backend = MODE_AHI;
+         } else {
+             Ahi_Close();
+-            Blk = 768;
++            Blk = PaulaBlock;
+             if (Paula_Open()) { // no AHI: Paula
+                 Backend = MODE_PAULA;
+             } else {
+@@ -649,7 +682,7 @@ static void Mixer_Main()
+         FreeSignal(QuitSig);
+     {
+         char msg[256];
+-        std::snprintf(msg, sizeof(msg), "mixer stopped after %ld s: %u blocks of %d frames, %u underruns, mixing %lu ticks (%lu us per block)", (long)(std::time(nullptr) - StatStart), StatBlocks, Blk, StatUnderruns, (unsigned long)StatMixTicks, (unsigned long)(StatBlocks ? (StatMixTicks * 1000000ULL / 709379ULL) / StatBlocks : 0));
++        std::snprintf(msg, sizeof(msg), "mixer stopped after %ld s: %u blocks of %d frames, %u underruns, mixing %lu ticks (%lu us per block), %u late wake-ups (worst %lu ms)", (long)(std::time(nullptr) - StatStart), StatBlocks, Blk, StatUnderruns, (unsigned long)StatMixTicks, (unsigned long)(StatBlocks ? (StatMixTicks * 1000000ULL / 709379ULL) / StatBlocks : 0), StatLate, StatLateWorst);
+         Log(msg);
+     }
+     Backend = MODE_OFF;
+@@ -657,6 +690,15 @@ static void Mixer_Main()
+     Ready = 2; // finished (read by the parent)
+ }
+ 
++// A line in the sound log with the time since the start of the mixer (to put the late buffers next to what the game was
++// doing): the start of a music track.
++void Amiga_Sound_Note(const char* what, int a)
++{
++    char m[120];
++    std::snprintf(m, sizeof(m), "note at %ld s: %s %d", (long)(std::time(nullptr) - StatStart), what, a);
++    Log(m);
++}
++
+ // ---------------------------------------------------------------------------------- interface
+ 
+ static bool ShutDown;
+diff --git a/common/soundio_common.cpp b/common/soundio_common.cpp
+index dd4795e..b225717 100644
+--- a/common/soundio_common.cpp
++++ b/common/soundio_common.cpp
+@@ -202,6 +202,8 @@ Sample_Type SampleType;
+ static void* FileStreamBuffer = nullptr;
+ bool StreamLowImpact = false;
+ static bool StartingFileStream = false;
++// true while File_Stream_Preload starts a music stream: the buffers it has read ahead (FilePending) are then valid
++static bool StreamingStart = false;
+ static bool volatile AudioDone = false;
+ extern bool GameInFocus;
+ static uint8_t ChunkBuffer[BUFFER_CHUNK_SIZE];
+@@ -480,7 +482,9 @@ static void File_Stream_Preload(int index)
+ 
+         LockedData.SoundVolume = LockedData.ScoreVolume;
+         StartingFileStream = true;
++        StreamingStart = true;
+         Stream_Sample_Vol(st->FileBuffer, stream_size, File_Callback, st->Volume, index);
++        StreamingStart = false;
+         StartingFileStream = false;
+ 
+         LockedData.SoundVolume = old_vol;
+@@ -510,6 +514,9 @@ static void File_Stream_Preload(int index)
+     }
+ }
+ 
++#ifdef __amigaos__
++void Amiga_Sound_Note(const char* what, int a);
++#endif
+ int File_Stream_Sample_Vol(char const* filename, int volume, bool real_time_start)
+ {
+     if (LockedData.DigiHandle == INVALID_AUDIO_HANDLE || filename == nullptr || !Find_File(filename)) {
+@@ -535,6 +542,9 @@ int File_Stream_Sample_Vol(char const* filename, int volume, bool real_time_star
+     }
+ 
+     int handle = Get_Free_Sample_Handle(PRIORITY_MAX);
++#ifdef __amigaos__
++    Amiga_Sound_Note("music track started, tracker", handle);
++#endif
+ 
+     if (handle < MAX_SAMPLE_TRACKERS) {
+         SampleTrackerType* st = &LockedData.SampleTracker[handle];
+@@ -833,6 +843,9 @@ void Stop_Sample(int index)
+             }
+ 
+             st->QueueBuffer = nullptr;
++            st->FilePending = 0;
++            st->FilePendingSize = 0;
++            st->Callback = nullptr;
+         }
+     }
+ }
+@@ -1011,6 +1024,16 @@ static int Play_Sample_Handle(const void* sample, int priority, int volume, sign
+ 
+         SampleTrackerType* st = &LockedData.SampleTracker[id];
+ 
++        if (!StreamingStart) {
++            // A tracker that played a music stream and was stopped before the end still counted buffers read ahead
++            // (FilePending) and had its callback. Left there, the buffers of the old music were appended to the next
++            // sound of this tracker once its own data had run out and were played as if they were samples: loud noise
++            // for as long as they lasted (RA and TD, found on 24.11.2026).
++            st->FilePending = 0;
++            st->FilePendingSize = 0;
++            st->Callback = nullptr;
++        }
++
+         // Read in the sample's header.
+         AUDHeaderType raw_header;
+         memcpy(&raw_header, sample, sizeof(raw_header));
+diff --git a/redalert/credits.cpp b/redalert/credits.cpp
+index a77dbd8..fec6aba 100644
+--- a/redalert/credits.cpp
++++ b/redalert/credits.cpp
+@@ -99,7 +99,14 @@ void CreditClass::Graphic_Logic(bool forced)
+         **	Play a sound effect when the money display changes, but only if a sound
+         **	effect was requested.
+         */
+-        if (IsAudible) {
++        /*
++        **	The tick sounds once per game frame at most. This is called for every redraw of the tab and the
++        **	game redraws many times a frame while it waits for the next one (about 100 times a second here), so
++        **	the short tones ran together into a buzz.
++        */
++        static int last_sound_frame = -1;
++        if (IsAudible && last_sound_frame != (int)Frame) {
++            last_sound_frame = (int)Frame;
+             if (IsUp) {
+                 Sound_Effect(VOC_MONEY_UP, fixed(1, 2));
+             } else {
+diff --git a/tiberiandawn/credits.cpp b/tiberiandawn/credits.cpp
+index 78e116d..1198c75 100644
+--- a/tiberiandawn/credits.cpp
++++ b/tiberiandawn/credits.cpp
+@@ -91,11 +91,19 @@ void CreditClass::Graphic_Logic(bool forced)
+         **	Play a sound effect when the money display changes, but only if a sound
+         **	effect was requested.
+         */
+-        if (IsAudible) {
++        /*
++        **	The tick sounds once per game frame at most. This is called for every redraw of the tab and the
++        **	game redraws many times a frame while it waits for the next one (about 100 times a second here), so
++        **	the short tones ran together into a buzz.
++        */
++        static int last_sound_frame = -1;
++        if (IsAudible && last_sound_frame != (int)Frame) {
++            last_sound_frame = (int)Frame;
++            // VOL_1 (10 %) was meant for a flood of overlapping ticks; one tick per frame needs more to be heard
+             if (IsUp) {
+-                Sound_Effect(VOC_UP, VOL_1);
++                Sound_Effect(VOC_UP, VOL_4);
+             } else {
+-                Sound_Effect(VOC_DOWN, VOL_1);
++                Sound_Effect(VOC_DOWN, VOL_4);
+             }
+         }
+ 
+-- 
+2.45.2.windows.1
+

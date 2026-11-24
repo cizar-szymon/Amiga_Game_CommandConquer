@@ -1,7 +1,7 @@
 From ce550989332ace305c847af9d0aeff9670688a10 Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Mon, 23 Nov 2026 14:20:45 +0100
-Subject: [PATCH 23/30] Movie sound follows the game sound back end (Paula or
+Subject: [PATCH 23/31] Movie sound follows the game sound back end (Paula or
  AHI), MOVIESOUND=OFF/PAULA options
 
 ---

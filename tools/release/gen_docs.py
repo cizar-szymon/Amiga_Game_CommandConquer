@@ -181,6 +181,7 @@ numer wydania (Shell: Version {dir}), opis Amigi i karty oraz co sie robilo.
     przechodzi sam do nastepnej linii. Enter w polu opisu wysyla zgloszenie,
     Esc je anuluje. Okno otwiera sie od razu; stan gry jest zapisywany po
     kliknieciu SEND (komunikat "SAVING THE GAME").
+  - Naliczanie kredytow ma jeden wyrazny tik na klatke gry.
 
 0.3  (24.11.2026)
   - Straznik zawieszen zapisuje RAM:cnc-hang.txt dopiero wtedy, gdy gra nie
@@ -208,6 +209,7 @@ and what you were doing.
     goes to the next line by itself. Enter in the box sends the report,
     Esc cancels it. The window opens at once; the state of the game is
     saved after SEND (message "SAVING THE GAME").
+  - The credits counter gives one clear tick for every game frame.
 
 0.3  (24.11.2026)
   - The hang guard writes RAM:cnc-hang.txt only when the game does not respond
