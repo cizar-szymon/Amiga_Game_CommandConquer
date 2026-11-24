@@ -1,0 +1,17 @@
+COMMAND & CONQUER: RED ALERT for the Amiga - history of releases
+====================================================================
+
+How to report a bug: the F10 key in the game (report window, needs a TCP/IP
+stack) or give the release number (Shell: Version RedAlert), your Amiga and card,
+and what you were doing.
+
+0.2  (24.11.2026)
+  - Red Alert: Allied and Soviet campaigns, 640x400, 256 colours, mouse control.
+  - Movies with sound (with data that contain the movies); Tool Type MOVIES=OFF
+    skips them.
+  - Sound and music through the Amiga's own audio chip (Paula, default) or AHI;
+    Tool Types SOUND=PAULA / AHI / OFF. The sound of the movies takes the same way.
+  - Bug reports with the F10 key: a window in the style of the game's menus, sent
+    to the game server (e-mail, words, game state, picture of the screen); without
+    a TCP/IP stack only the files are written.
+  - Start from the icon or from a Shell; Ctrl-C closes the game.

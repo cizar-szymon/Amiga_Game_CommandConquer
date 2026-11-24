@@ -1,0 +1,2 @@
+# release files are byte for byte what is in the ZIP
+releases/** -text
