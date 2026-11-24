@@ -7,7 +7,8 @@ numer wydania (Shell: Version TiberianDawn), opis Amigi i karty oraz co sie robi
 0.4  (24.11.2026)
   - Okno zgloszenia bledu (F10): jedno pole na opis problemu; dlugi tekst
     przechodzi sam do nastepnej linii. Enter w polu opisu wysyla zgloszenie,
-    Esc je anuluje.
+    Esc je anuluje. Okno otwiera sie od razu; stan gry jest zapisywany po
+    kliknieciu SEND (komunikat "SAVING THE GAME").
 
 0.3  (24.11.2026)
   - Straznik zawieszen zapisuje RAM:cnc-hang.txt dopiero wtedy, gdy gra nie

@@ -1,7 +1,7 @@
 From b5e8e95173abb232e9017c54476d5aaaa54d05a3 Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Mon, 23 Nov 2026 18:59:37 +0100
-Subject: [PATCH 24/29] Movie sound: stream FIFO 1 MB, drop when full (no
+Subject: [PATCH 24/30] Movie sound: stream FIFO 1 MB, drop when full (no
  loader sleep: it hung Red Alert), drift correction to the movie timer,
  MovieLag, loader TempBuf fixes, Paula output direct, watchdog task dump
 

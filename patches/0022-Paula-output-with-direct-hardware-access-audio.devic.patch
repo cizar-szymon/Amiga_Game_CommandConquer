@@ -1,7 +1,7 @@
 From 2b60ae121fd7b3501c5e41e41bbc9f48b53596f0 Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Mon, 23 Nov 2026 14:08:08 +0100
-Subject: [PATCH 22/29] Paula output with direct hardware access (audio.device
+Subject: [PATCH 22/30] Paula output with direct hardware access (audio.device
  is silent on Amiga 2); movie Paula task uses it
 
 ---

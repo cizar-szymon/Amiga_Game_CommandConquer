@@ -8,7 +8,8 @@ and what you were doing.
 0.4  (24.11.2026)
   - The bug report window (F10): one box for the description; long text
     goes to the next line by itself. Enter in the box sends the report,
-    Esc cancels it.
+    Esc cancels it. The window opens at once; the state of the game is
+    saved after SEND (message "SAVING THE GAME").
 
 0.3  (24.11.2026)
   - The hang guard writes RAM:cnc-hang.txt only when the game does not respond

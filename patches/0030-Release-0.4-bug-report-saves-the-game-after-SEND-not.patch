@@ -1,0 +1,275 @@
+From a448da2eebe4fa86f3a826672fa84256bf1dbd8f Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Tue, 24 Nov 2026 13:35:36 +0100
+Subject: [PATCH 30/30] Release 0.4: bug report saves the game after SEND (not
+ before the window), faster LCW_Comp (index of 3 bytes), hang guard pause
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017g4PoTADs6Z5A5aMeTycB9
+---
+ common/amiga_watchdog.cpp |  6 ++++
+ common/lcw.cpp            | 71 +++++++++++++++++++++++----------------
+ redalert/bugdlg.cpp       | 36 +++++++++++++++++---
+ tiberiandawn/bugdlg.cpp   | 36 +++++++++++++++++---
+ 4 files changed, 112 insertions(+), 37 deletions(-)
+
+diff --git a/common/amiga_watchdog.cpp b/common/amiga_watchdog.cpp
+index 79f4de9..0d6a6d4 100644
+--- a/common/amiga_watchdog.cpp
++++ b/common/amiga_watchdog.cpp
+@@ -16,6 +16,7 @@
+ extern struct ExecBase* SysBase;
+ 
+ volatile unsigned Amiga_Heartbeat = 0;
++volatile int Amiga_Watchdog_Pause = 0; // set while the game does one long job on purpose (bug report: saved game)
+ 
+ static struct Task* MainTask = nullptr;
+ static volatile int StopFlag = 0;
+@@ -72,6 +73,11 @@ static void Watchdog_Main()
+     while (!StopFlag) {
+         Delay(50); // 1 s
+         unsigned now = Amiga_Heartbeat;
++        if (Amiga_Watchdog_Pause) {
++            stuck = 0;
++            last = now;
++            continue;
++        }
+         if (now == last) {
+             if (++stuck >= 10 && stuck <= 12) {
+                 Write_Hang(now);
+diff --git a/common/lcw.cpp b/common/lcw.cpp
+index cdeaabd..cbfeb3f 100644
+--- a/common/lcw.cpp
++++ b/common/lcw.cpp
+@@ -173,6 +173,14 @@ int LCW_Uncompress(void const* source, void* dest, unsigned length)
+     return (int)(dest_ptr - (unsigned char*)dest);
+ }
+ 
++// The index of earlier positions for LCW_Comp: lcw_head[hash of 3 bytes] = the latest position + 1 with that hash (0 =
++// none), lcw_prev[position] = the one before it. The offsets of LCW are 16 bits, so positions beyond 64 KB are not used.
++#define LCW_MAX_POS 65535u
++#define LCW_MAX_CHAIN 128
++#define LCW_Hash(p) (((((unsigned)(p)[0] * 31u) + (p)[1]) * 31u + (p)[2]) & 4095u)
++static unsigned short lcw_head[4096];
++static unsigned short lcw_prev[LCW_MAX_POS];
++
+ int LCW_Comp(const void* src, void* dst, unsigned int bytes)
+ {
+     if (!bytes) {
+@@ -191,6 +199,10 @@ int LCW_Comp(const void* src, void* dst, unsigned int bytes)
+     *putp++ = *getp++;
+     cmd_one = true;
+ 
++    // the index of the positions that are behind us (see the search below)
++    const unsigned char* ins = getstart;
++    memset(lcw_head, 0, sizeof(lcw_head));
++
+     // Compress data
+     while (getp < getend) {
+         // Is RLE encode (4bytes) worth evaluating?
+@@ -218,40 +230,41 @@ int LCW_Comp(const void* src, void* dst, unsigned int bytes)
+ 
+         // current block size for an offset copy
+         int block_size = 0;
+-        const unsigned char* offstart;
+-
+-        // Set where we start looking for matching runs.
+-        offstart = getstart;
+-
+-        // Look for matching runs
+-        const unsigned char* offchk = offstart;
+         const unsigned char* offsetp = getp;
+-        while (offchk < getp) {
+-            // Move offchk to next matching position
+-            while (offchk < getp && *offchk != *getp) {
+-                ++offchk;
+-            }
+ 
+-            // If the checking pointer has reached current pos, break
+-            if (offchk >= getp) {
+-                break;
++        // Look for the longest earlier run that starts like the data here. A run shorter than 3 bytes is never used, so
++        // only positions that start with the same 3 bytes are looked at: they are chained by a hash of those 3 bytes,
++        // the nearest first, so of equal runs the nearest wins, as in the plain search of the original. That search
++        // scanned the whole block for every byte: half a minute for a saved game of Red Alert on a 68060.
++        while (ins < getp) {
++            if (ins + 2 < getend && (unsigned)(ins - getstart) < LCW_MAX_POS) {
++                unsigned h = LCW_Hash(ins);
++                lcw_prev[ins - getstart] = lcw_head[h];
++                lcw_head[h] = (unsigned short)(ins - getstart + 1);
+             }
+-
+-            // find out how long the run of matches goes for
+-            //<= because it can consider the current pixel as part of a run
+-            int i;
+-            for (i = 1; &getp[i] < getend; ++i) {
+-                if (offchk[i] != getp[i]) {
+-                    break;
++            ++ins;
++        }
++        if (getp + 2 < getend) {
++            unsigned cand = lcw_head[LCW_Hash(getp)];
++            int chain = 0;
++            while (cand != 0 && chain < LCW_MAX_CHAIN) {
++                const unsigned char* offchk = getstart + (cand - 1);
++                if (offchk[0] == getp[0]) {
++                    // find out how long the run of matches goes for
++                    int i;
++                    for (i = 1; &getp[i] < getend; ++i) {
++                        if (offchk[i] != getp[i]) {
++                            break;
++                        }
++                    }
++                    if (i > block_size) {
++                        block_size = i;
++                        offsetp = offchk;
++                    }
+                 }
++                cand = lcw_prev[cand - 1];
++                ++chain;
+             }
+-
+-            if (i >= block_size) {
+-                block_size = i;
+-                offsetp = offchk;
+-            }
+-
+-            ++offchk;
+         }
+ 
+         // decide what encoding to use for current run
+diff --git a/redalert/bugdlg.cpp b/redalert/bugdlg.cpp
+index fd7416e..afae857 100644
+--- a/redalert/bugdlg.cpp
++++ b/redalert/bugdlg.cpp
+@@ -189,6 +189,36 @@ static bool Bug_Dialog(char* email, int email_size, char* text, int text_size)
+     return send;
+ }
+ 
++extern volatile int Amiga_Watchdog_Pause;
++
++// A little window with a text that stays on the screen while the game is busy (the picture is presented once,
++// before the long work starts).
++static void Bug_Notice(const char* text)
++{
++    Hide_Mouse();
++    int bw = 340, bh = 40;
++    Dialog_Box((SeenBuff.Get_Width() - bw) / 2, (SeenBuff.Get_Height() - bh) / 2, bw, bh);
++    Fancy_Text_Print(text, SeenBuff.Get_Width() / 2, SeenBuff.Get_Height() / 2 - 6, GadgetClass::Get_Color_Scheme(),
++                     TBLACK, (TextPrintType)(TPF_TEXT | TPF_CENTER));
++    Show_Mouse();
++    Frame_Limiter();
++    Frame_Limiter();
++}
++
++// The saved game of the report. It takes seconds (half a minute in Red Alert: compressed, encrypted, checksum), so it is
++// done after SEND behind a notice, not before the window opens; the hang guard is paused meanwhile.
++static bool Bug_Save(const char* savname)
++{
++    if (!(PlayerPtr)) {
++        return false;
++    }
++    Bug_Notice("SAVING THE GAME, PLEASE WAIT...");
++    Amiga_Watchdog_Pause = 1;
++    bool saved = Save_Game(savname, "Bug report");
++    Amiga_Watchdog_Pause = 0;
++    return saved;
++}
++
+ void Amiga_Bug_Report()
+ {
+     static bool busy = false;
+@@ -208,15 +238,12 @@ void Amiga_Bug_Report()
+     Amiga_Write_Screen_BMP(bmp);
+     char savname[32];
+     std::snprintf(savname, sizeof(savname), "bug%03d.sav", n);
+-    bool saved = false;
+-    if (PlayerPtr) {
+-        saved = Save_Game(savname, "Bug report");
+-    }
+     Bug_Write_Text(n, txt);
+ 
+     bool net = Report_Network() != 0;
+     Bug_Log("bug report %d: files written, TCP/IP stack %s", n, net ? "running" : "not running");
+     if (!net) {
++        Bug_Save(savname);
+         char msg[160];
+         std::snprintf(msg, sizeof(msg), "Bug report %d saved in the user drawer (bug%03d.*). No TCP/IP stack: it cannot be sent.", n, n);
+         WWMessageBox().Process(msg);
+@@ -230,6 +257,7 @@ void Amiga_Bug_Report()
+     text[0] = 0;
+     if (Bug_Dialog(email, sizeof(email), text, sizeof(text))) {
+         Bug_Email_Save(email);
++        bool saved = Bug_Save(savname);
+         char host[64], machine[160];
+         int port;
+         Bug_Server(host, sizeof(host), &port);
+diff --git a/tiberiandawn/bugdlg.cpp b/tiberiandawn/bugdlg.cpp
+index 51a4073..e825e93 100644
+--- a/tiberiandawn/bugdlg.cpp
++++ b/tiberiandawn/bugdlg.cpp
+@@ -190,6 +190,36 @@ static bool Bug_Dialog(char* email, int email_size, char* text, int text_size)
+     return send;
+ }
+ 
++extern volatile int Amiga_Watchdog_Pause;
++
++// A little window with a text that stays on the screen while the game is busy (the picture is presented once,
++// before the long work starts).
++static void Bug_Notice(const char* text)
++{
++    Hide_Mouse();
++    int bw = 340, bh = 40;
++    Dialog_Box((SeenBuff.Get_Width() - bw) / 2, (SeenBuff.Get_Height() - bh) / 2, bw, bh);
++    Fancy_Text_Print(text, SeenBuff.Get_Width() / 2, SeenBuff.Get_Height() / 2 - 6, CC_GREEN, TBLACK,
++                     (TextPrintType)(TPF_6PT_GRAD | TPF_USE_GRAD_PAL | TPF_CENTER | TPF_NOSHADOW));
++    Show_Mouse();
++    Frame_Limiter();
++    Frame_Limiter();
++}
++
++// The saved game of the report. It takes seconds (half a minute in Red Alert: compressed, encrypted, checksum), so it is
++// done after SEND behind a notice, not before the window opens; the hang guard is paused meanwhile.
++static bool Bug_Save(const char* savname)
++{
++    if (!(InMainLoop && PlayerPtr)) {
++        return false;
++    }
++    Bug_Notice("SAVING THE GAME, PLEASE WAIT...");
++    Amiga_Watchdog_Pause = 1;
++    bool saved = Save_Game(savname, "Bug report");
++    Amiga_Watchdog_Pause = 0;
++    return saved;
++}
++
+ void Amiga_Bug_Report()
+ {
+     static bool busy = false;
+@@ -209,15 +239,12 @@ void Amiga_Bug_Report()
+     Amiga_Write_Screen_BMP(bmp);
+     char savname[32];
+     std::snprintf(savname, sizeof(savname), "bug%03d.sav", n);
+-    bool saved = false;
+-    if (InMainLoop && PlayerPtr) {
+-        saved = Save_Game(savname, "Bug report");
+-    }
+     Bug_Write_Text(n, txt);
+ 
+     bool net = Report_Network() != 0;
+     Bug_Log("bug report %d: files written, TCP/IP stack %s", n, net ? "running" : "not running");
+     if (!net) {
++        Bug_Save(savname);
+         char msg[160];
+         std::snprintf(msg, sizeof(msg), "Bug report %d saved in the user drawer (bug%03d.*). No TCP/IP stack: it cannot be sent.", n, n);
+         WWMessageBox().Process(msg);
+@@ -231,6 +258,7 @@ void Amiga_Bug_Report()
+     text[0] = 0;
+     if (Bug_Dialog(email, sizeof(email), text, sizeof(text))) {
+         Bug_Email_Save(email);
++        bool saved = Bug_Save(savname);
+         char host[64], machine[160];
+         int port;
+         Bug_Server(host, sizeof(host), &port);
+-- 
+2.45.2.windows.1
+

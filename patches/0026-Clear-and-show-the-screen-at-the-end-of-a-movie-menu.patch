@@ -1,7 +1,7 @@
 From f64d417ffc93a9af626b99dcb018bf2f035e4905 Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Mon, 23 Nov 2026 20:10:29 +0100
-Subject: [PATCH 26/29] Clear and show the screen at the end of a movie (menu
+Subject: [PATCH 26/30] Clear and show the screen at the end of a movie (menu
  load takes seconds)
 
 ---

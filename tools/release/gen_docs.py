@@ -179,7 +179,8 @@ numer wydania (Shell: Version {dir}), opis Amigi i karty oraz co sie robilo.
 {v}  (24.11.2026)
   - Okno zgloszenia bledu (F10): jedno pole na opis problemu; dlugi tekst
     przechodzi sam do nastepnej linii. Enter w polu opisu wysyla zgloszenie,
-    Esc je anuluje.
+    Esc je anuluje. Okno otwiera sie od razu; stan gry jest zapisywany po
+    kliknieciu SEND (komunikat "SAVING THE GAME").
 
 0.3  (24.11.2026)
   - Straznik zawieszen zapisuje RAM:cnc-hang.txt dopiero wtedy, gdy gra nie
@@ -205,7 +206,8 @@ and what you were doing.
 {v}  (24.11.2026)
   - The bug report window (F10): one box for the description; long text
     goes to the next line by itself. Enter in the box sends the report,
-    Esc cancels it.
+    Esc cancels it. The window opens at once; the state of the game is
+    saved after SEND (message "SAVING THE GAME").
 
 0.3  (24.11.2026)
   - The hang guard writes RAM:cnc-hang.txt only when the game does not respond

@@ -1,7 +1,7 @@
 From b2e52b3aafda930cfbae177f4d1ab2aad117180d Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Sun, 22 Nov 2026 14:18:24 +0100
-Subject: [PATCH 01/29] AmigaOS: paths, keyboard stub, ms_sleep, strupr guard,
+Subject: [PATCH 01/30] AmigaOS: paths, keyboard stub, ms_sleep, strupr guard,
  Amiga debug log
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
