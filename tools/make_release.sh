@@ -20,8 +20,8 @@ for a in "$@"; do
 	esac
 done
 case "$GAME" in
-	td) N=TiberianDawn; BIN=build/amiga/vanillatd; R=releases/amiga; DATA=data/td2; ICON=td.png ;;
-	ra) N=RedAlert; BIN=build/amiga/vanillara; R=releases-ra/amiga; DATA=data/ra; ICON=ra.png ;;
+	td) N=TiberianDawn; BIN=build/amiga/vanillatd; R=releases/amiga; DATA=data/td2; ICON=td.png; CROP="0 0 76 45" ;;
+	ra) N=RedAlert; BIN=build/amiga/vanillara; R=releases-ra/amiga; DATA=data/ra; ICON=ra.png; CROP="0 0 76 70" ;;
 	*) echo "game: td or ra" >&2; exit 1 ;;
 esac
 V=$(cat VERSION)
@@ -35,7 +35,7 @@ rm -rf "$R/$N"
 mkdir -p "$R/$N/data" "$R/$N/user" "$R/$N/doc"
 cp $BIN "$R/$N/$N"
 # Tool Types in brackets are off, as hints
-python $T/make_icon.py "$R/$N/$N.info" --frame $T/icon/$ICON --crop 0 0 76 70 \
+python $T/make_icon.py "$R/$N/$N.info" --frame $T/icon/$ICON --crop $CROP \
   --tooltypes "(SOUND=AHI)" "(SOUND=OFF)" "(MOVIES=OFF)" "(REPORTSERVER=83.12.152.135:6810)" >/dev/null 2>&1
 cp $T/icon/warp-drawer.info "$R/$N.info"
 cp "$D/${N}.txt" "$D/${N}_en.txt" "$D/${N}_release.txt" "$D/${N}_release_en.txt" "$R/$N/doc/"
