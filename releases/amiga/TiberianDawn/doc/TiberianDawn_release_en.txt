@@ -5,6 +5,10 @@ How to report a bug: the F10 key in the game (report window, needs a TCP/IP
 stack) or give the release number (Shell: Version TiberianDawn), your Amiga and card,
 and what you were doing.
 
+0.3  (24.11.2026)
+  - The hang guard writes RAM:cnc-hang.txt only when the game does not respond
+    for 10 seconds (a long mission load does not start it).
+
 0.2  (24.11.2026)
   - Tiberian Dawn: GDI and Nod campaigns, 640x400, 256 colours, mouse control.
   - Movies with sound (with data that contain the movies); Tool Type MOVIES=OFF

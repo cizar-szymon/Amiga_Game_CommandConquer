@@ -1,4 +1,4 @@
-COMMAND & CONQUER: TIBERIAN DAWN na Amige (karty Warp)                      wydanie 0.2
+COMMAND & CONQUER: TIBERIAN DAWN na Amige (karty Warp)                      wydanie 0.3
 ==========================================================================
 
 Port silnika GPL "Vanilla Conquer" (otwarte zrodla gry firmy Electronic Arts)
@@ -18,7 +18,7 @@ WYMAGANIA
   Zgloszenia bledow z gry wymagaja stosu TCP/IP (Roadshow, Miami, Genesis).
 
 INSTALACJA
-  UnZip TiberianDawn-0.2.zip -d Work:Games
+  UnZip TiberianDawn-0.3.zip -d Work:Games
   Pliki gry wlozyc do TiberianDawn/data (darmowe dane Electronic Arts, NIE
   dolaczone):
     Pliki *.MIX z Command & Conquer (Gold), darmowych danych Tiberian Dawn wydanych przez

@@ -23,8 +23,8 @@ Tested on: A1200 + Warp 1260 Extreme and A4000 + Warp 7060 (68060), AmigaOS 3.2.
 Each game is its own package: the ZIP of Tiberian Dawn is in `releases/amiga`, the ZIP of Red Alert is in
 `releases/amiga` of the branch `release-ra`:
 
-    UnZip TiberianDawn-0.2.zip -d Work:Games
-    UnZip RedAlert-0.2.zip -d Work:Games
+    UnZip TiberianDawn-0.3.zip -d Work:Games
+    UnZip RedAlert-0.3.zip -d Work:Games
 
 The game data is **not included** (the freeware releases by Electronic Arts): see `data/ReadMe.txt` of
 each package. Tiberian Dawn: the `*.MIX` files of Command & Conquer (Gold). Red Alert: `MAIN.MIX` and

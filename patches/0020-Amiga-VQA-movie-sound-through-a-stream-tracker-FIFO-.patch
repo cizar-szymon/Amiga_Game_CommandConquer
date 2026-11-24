@@ -1,7 +1,7 @@
 From 95647b4e24a4843d4528b3fd9007a5f63c2b760c Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Mon, 23 Nov 2026 11:05:13 +0100
-Subject: [PATCH 20/27] Amiga: VQA movie sound through a stream tracker (FIFO)
+Subject: [PATCH 20/28] Amiga: VQA movie sound through a stream tracker (FIFO)
  in the mixer; movies on by default; AHI ring of 4 sounds
 
 - vqaaudio_amiga.cpp: the loader's audio data goes into a byte FIFO of a stream tracker drained by the mixer task

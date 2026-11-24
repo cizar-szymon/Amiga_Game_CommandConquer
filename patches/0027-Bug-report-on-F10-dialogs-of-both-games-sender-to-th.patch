@@ -1,7 +1,7 @@
 From 60e9304ae0744601acc943b603d393c67c1066f2 Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Tue, 24 Nov 2026 01:28:28 +0100
-Subject: [PATCH 27/27] Bug report on F10 (dialogs of both games, sender to the
+Subject: [PATCH 27/28] Bug report on F10 (dialogs of both games, sender to the
  game server), Paula default, release 0.2 tags
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>

@@ -1,7 +1,7 @@
 From cca9a4c7397bb901304ee899cdf6987bf959e867 Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Sun, 22 Nov 2026 20:07:07 +0100
-Subject: [PATCH 05/27] Amiga: E-Clock time source for frame limiter and game
+Subject: [PATCH 05/28] Amiga: E-Clock time source for frame limiter and game
  timer (12 -> 29 fps), profiler slots
 
 Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>

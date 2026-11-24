@@ -1,4 +1,4 @@
-COMMAND & CONQUER: TIBERIAN DAWN for the Amiga (Warp cards)                 release 0.2
+COMMAND & CONQUER: TIBERIAN DAWN for the Amiga (Warp cards)                 release 0.3
 ==========================================================================
 
 Port of the GPL engine "Vanilla Conquer" (the open-source game of Electronic
@@ -19,7 +19,7 @@ REQUIREMENTS
   Genesis).
 
 INSTALLATION
-  UnZip TiberianDawn-0.2.zip -d Work:Games
+  UnZip TiberianDawn-0.3.zip -d Work:Games
   Put the game files into TiberianDawn/data (the freeware data from Electronic Arts,
   NOT included):
     The *.MIX files of Command & Conquer (Gold), the freeware Tiberian Dawn data released by

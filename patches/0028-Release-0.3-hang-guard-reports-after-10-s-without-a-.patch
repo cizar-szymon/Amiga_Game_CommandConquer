@@ -1,0 +1,64 @@
+From cd2ed4ee7874144c10a109f6ec4219302c01e0e6 Mon Sep 17 00:00:00 2001
+From: cizar-szymon <szymon@cs-lab.eu>
+Date: Tue, 24 Nov 2026 11:01:00 +0100
+Subject: [PATCH 28/28] Release 0.3: hang guard reports after 10 s without a
+ heartbeat
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017g4PoTADs6Z5A5aMeTycB9
+---
+ common/amiga_watchdog.cpp | 4 ++--
+ redalert/bugdlg.cpp       | 2 +-
+ tiberiandawn/bugdlg.cpp   | 2 +-
+ 3 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/common/amiga_watchdog.cpp b/common/amiga_watchdog.cpp
+index d694f04..79f4de9 100644
+--- a/common/amiga_watchdog.cpp
++++ b/common/amiga_watchdog.cpp
+@@ -1,6 +1,6 @@
+ // Hang guard for the Amiga port. A helper process watches a heartbeat counter
+ // that the main task bumps on every frame and input poll. If the counter stops
+-// for ~4 s the guard writes the main task's saved PC and top of stack to
++// for 10 s the guard writes the main task's saved PC and top of stack to
+ // RAM:cnc-hang.txt (map the words to functions with nm + the base address from
+ // RAM:cnc-log.txt "main=").
+ #include <cstdio>
+@@ -73,7 +73,7 @@ static void Watchdog_Main()
+         Delay(50); // 1 s
+         unsigned now = Amiga_Heartbeat;
+         if (now == last) {
+-            if (++stuck >= 1 && stuck <= 4) {
++            if (++stuck >= 10 && stuck <= 12) {
+                 Write_Hang(now);
+             }
+         } else {
+diff --git a/redalert/bugdlg.cpp b/redalert/bugdlg.cpp
+index 10dab02..7847cd4 100644
+--- a/redalert/bugdlg.cpp
++++ b/redalert/bugdlg.cpp
+@@ -7,7 +7,7 @@
+ #include "msgbox.h"
+ #include "edit.h"
+ #include "textbtn.h"
+-#define CNC_PORT_VERSION "0.2"
++#define CNC_PORT_VERSION "0.3"
+ // Shell `Version` command; the release number is bumped for every build given to users.
+ extern "C" const char amiga_version_tag[] __attribute__((used)) = "$VER: RedAlert " CNC_PORT_VERSION " (24.11.2026)";
+ #include "../common/report_amiga.h"
+diff --git a/tiberiandawn/bugdlg.cpp b/tiberiandawn/bugdlg.cpp
+index 6bc01d3..d031261 100644
+--- a/tiberiandawn/bugdlg.cpp
++++ b/tiberiandawn/bugdlg.cpp
+@@ -4,7 +4,7 @@
+ // only stay in the drawer.
+ #ifdef __amigaos__
+ #include "function.h"
+-#define CNC_PORT_VERSION "0.2"
++#define CNC_PORT_VERSION "0.3"
+ // Shell `Version` command; the release number is bumped for every build given to users.
+ extern "C" const char amiga_version_tag[] __attribute__((used)) = "$VER: TiberianDawn " CNC_PORT_VERSION " (24.11.2026)";
+ #include "../common/report_amiga.h"
+-- 
+2.45.2.windows.1
+

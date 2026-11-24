@@ -4,6 +4,10 @@ COMMAND & CONQUER: RED ALERT na Amige - historia wydan
 Jak zglosic blad: klawisz F10 w grze (okno zgloszenia, wymaga stosu TCP/IP) albo
 numer wydania (Shell: Version RedAlert), opis Amigi i karty oraz co sie robilo.
 
+0.3  (24.11.2026)
+  - Straznik zawieszen zapisuje RAM:cnc-hang.txt dopiero wtedy, gdy gra nie
+    odpowiada przez 10 sekund (dluzsze wczytywanie misji go nie uruchamia).
+
 0.2  (24.11.2026)
   - Red Alert: kampanie Aliantow i Sowietow, ekran 640x400, 256 kolorow, sterowanie mysza.
   - Filmy z dzwiekiem (z danymi zawierajacymi filmy); Tool Type MOVIES=OFF je pomija.

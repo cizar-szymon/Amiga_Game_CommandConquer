@@ -175,6 +175,10 @@ Jak zglosic blad: klawisz F10 w grze (okno zgloszenia, wymaga stosu TCP/IP) albo
 numer wydania (Shell: Version {dir}), opis Amigi i karty oraz co sie robilo.
 
 {v}  (24.11.2026)
+  - Straznik zawieszen zapisuje RAM:cnc-hang.txt dopiero wtedy, gdy gra nie
+    odpowiada przez 10 sekund (dluzsze wczytywanie misji go nie uruchamia).
+
+0.2  (24.11.2026)
   - {short}: {game_one_pl}, ekran 640x400, 256 kolorow, sterowanie mysza.
   - Filmy z dzwiekiem (z danymi zawierajacymi filmy); Tool Type MOVIES=OFF je pomija.
   - Dzwiek i muzyka przez wlasny uklad audio Amigi (Paula, domyslnie) albo AHI;
@@ -192,6 +196,10 @@ stack) or give the release number (Shell: Version {dir}), your Amiga and card,
 and what you were doing.
 
 {v}  (24.11.2026)
+  - The hang guard writes RAM:cnc-hang.txt only when the game does not respond
+    for 10 seconds (a long mission load does not start it).
+
+0.2  (24.11.2026)
   - {short}: {game_one_en}, 640x400, 256 colours, mouse control.
   - Movies with sound (with data that contain the movies); Tool Type MOVIES=OFF
     skips them.

@@ -1,7 +1,7 @@
 From 8d5dcda1d4689b99434287f3a9bebd11771971a9 Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Mon, 23 Nov 2026 00:42:10 +0100
-Subject: [PATCH 15/27] keyframe: skip uninitialised DOS page logic
+Subject: [PATCH 15/28] keyframe: skip uninitialised DOS page logic
 
 ---
  common/keyframe.cpp | 5 +++++
