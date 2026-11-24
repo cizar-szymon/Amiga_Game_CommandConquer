@@ -10,6 +10,8 @@ numer wydania (Shell: Version RedAlert), opis Amigi i karty oraz co sie robilo.
     Esc je anuluje. Okno otwiera sie od razu; stan gry jest zapisywany po
     kliknieciu SEND (komunikat "SAVING THE GAME").
   - Naliczanie kredytow ma jeden wyrazny tik na klatke gry.
+  - Kazde zgloszenie bledu ma wlasna szuflade user/bugNNN z plikami bugNNN.txt,
+    bugNNN-screen.bmp i bugNNN.sav.
 
 0.3  (24.11.2026)
   - Straznik zawieszen zapisuje RAM:cnc-hang.txt dopiero wtedy, gdy gra nie
