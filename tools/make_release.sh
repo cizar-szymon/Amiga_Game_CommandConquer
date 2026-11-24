@@ -46,6 +46,8 @@ for t in Install.txt:doc_i:72:10 ${N}.txt:doc_pl:72:80 ${N}_en.txt:doc_en:282:80
 	IFS=: read -r f pic x y <<EOT
 $t
 EOT
+	# FFS names are 30 characters at most, "<name>.info" too: no icon for a text whose icon name would be longer
+	[ $((${#f} + 5)) -gt 30 ] && { echo "no icon for $f (name of the icon over 30 characters)"; continue; }
 	python $T/make_doc_icon.py "$R/$N/doc/$f.info" --frame "$T/icon/$pic.png" --crop 0 0 36 44 --transparent --project SYS:Utilities/MultiView --pos "$x" "$y" >/dev/null 2>&1
 done
 cp "$D/${N}_data_ReadMe.txt" "$R/$N/data/ReadMe.txt"
