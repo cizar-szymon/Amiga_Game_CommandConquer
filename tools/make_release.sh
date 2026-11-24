@@ -20,7 +20,7 @@ for a in "$@"; do
 	esac
 done
 case "$GAME" in
-	td) N=TiberianDawn; BIN=build/amiga/vanillatd; R=releases/amiga; DATA=data/td2; ICON=eagle.png ;;
+	td) N=TiberianDawn; BIN=build/amiga/vanillatd; R=releases/amiga; DATA=data/td2; ICON=td.png ;;
 	ra) N=RedAlert; BIN=build/amiga/vanillara; R=releases-ra/amiga; DATA=data/ra; ICON=ra.png ;;
 	*) echo "game: td or ra" >&2; exit 1 ;;
 esac
