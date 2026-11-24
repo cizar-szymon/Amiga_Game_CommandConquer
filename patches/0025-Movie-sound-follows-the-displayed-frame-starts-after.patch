@@ -1,7 +1,7 @@
 From caaa3378f969244b7bd82668441d915e62624f5f Mon Sep 17 00:00:00 2001
 From: cizar-szymon <szymon@cs-lab.eu>
 Date: Mon, 23 Nov 2026 20:03:14 +0100
-Subject: [PATCH 25/26] Movie sound follows the displayed frame, starts after
+Subject: [PATCH 25/27] Movie sound follows the displayed frame, starts after
  the first picture, MovieLag 0.5 s, end-of-movie counters
 
 ---

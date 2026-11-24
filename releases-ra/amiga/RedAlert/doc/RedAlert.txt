@@ -1,0 +1,58 @@
+COMMAND & CONQUER: RED ALERT na Amige (karty Warp)                      wydanie 0.2
+==========================================================================
+
+Port silnika GPL "Vanilla Conquer" (otwarte zrodla gry firmy Electronic Arts)
+na AmigaOS 3.x z wlasnym, natywnym ukladem wyswietlania.
+
+SPRZET
+  Przeznaczony dla Amigi 500 / 1200 / 3000 / 4000 z karta Warp (Warp 560,
+  1240, 1260, 1260 Extreme, 7060), na takich kartach przenoszony i testowany:
+  szybkosc osiaga dzieki szybkiej grafice (RTG) Warpa. Inne Amigi z
+  68040/68060 i Picasso96 uruchomia gre, ale wolniej.
+  Testowano na: A1200 + Warp 1260 Extreme, A4000 + Warp 7060 (68060),
+  AmigaOS 3.2.
+
+WYMAGANIA
+  AmigaOS 3.2, Picasso96, 68060.library (lub 040), dane gry (patrz
+  data/ReadMe.txt). Dzwiek: wlasny uklad audio Amigi (Paula); AHI jako opcja.
+  Zgloszenia bledow z gry wymagaja stosu TCP/IP (Roadshow, Miami, Genesis).
+
+INSTALACJA
+  UnZip RedAlert-0.2.zip -d Work:Games
+  Pliki gry wlozyc do RedAlert/data (darmowe dane Electronic Arts, NIE
+  dolaczone):
+    Pliki z Command & Conquer: Red Alert (darmowe dane wydane przez Electronic Arts, z plyty
+    Allied lub Soviet):
+      MAIN.MIX      (z glownego katalogu plyty)
+      REDALERT.MIX  (z katalogu INSTALL plyty)
+    MAIN.MIX zawiera tez filmy.
+  Uruchomic RedAlert z ikony albo z Shella.
+
+GRA
+  Kampanie Aliantow i Sowietow, ekran 640x400, 256 kolorow, gra sie mysza jak na PC.
+  Panel boczny otwiera zakladka "Sidebar" w prawym gornym rogu.
+  Filmy sa odtwarzane z dzwiekiem (jesli dane zawieraja filmy).
+  Zapisy gry i ustawienia: szuflada "user" w szufladzie gry.
+  Ctrl-C zamyka gre.
+
+USTAWIENIA (Tool Types ikony, usun nawiasy, zeby wlaczyc)
+  SOUND=PAULA          dzwiek przez wlasny uklad audio Amigi (domyslnie)
+  SOUND=AHI            dzwiek przez AHI (na karcie Warp przez HDMI)
+  SOUND=OFF            bez dzwieku
+  MOVIES=OFF           filmy pomijane
+  REPORTSERVER=host:port   serwer zgloszen bledow (domyslnie serwer gier)
+  Dzwiek filmow idzie ta sama droga co dzwiek gry.
+
+ZGLASZANIE BLEDOW (F10)
+  Klawisz F10 w trakcie gry zapisuje stan gry (w szufladzie "user": bugNNN.txt,
+  bugNNN-screen.bmp, bugNNN.sav) i - jesli dziala stos TCP/IP - otwiera okno
+  zgloszenia: adres e-mail (nieobowiazkowy, zapamietany) i kilka slow o
+  problemie (Enter przechodzi do nastepnego pola, w ostatnim wysyla; Esc
+  zamyka). Przycisk SEND wysyla zgloszenie na serwer gier: e-mail i opis,
+  numer wydania, opis Amigi (procesor, Kickstart, pamiec, karta Warp), obraz
+  ekranu i zapis gry. Numer zgloszenia pojawia sie po wyslaniu. Bez stosu
+  TCP/IP F10 zapisuje tylko pliki - mozna je przeslac autorowi recznie.
+  Uwaga: F10 nie jest juz klawiszem zakladki nr 2 (zakladki: F9, F11, F12).
+
+LICENCJA
+  GNU GPL v3 (doc/COPYING). Dane gry naleza do Electronic Arts.

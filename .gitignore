@@ -3,3 +3,4 @@ vanilla-conquer/
 build/
 downloads/
 private/
+tools/__pycache__/

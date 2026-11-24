@@ -1,0 +1,62 @@
+COMMAND & CONQUER: TIBERIAN DAWN for the Amiga (Warp cards)                 release 0.2
+==========================================================================
+
+Port of the GPL engine "Vanilla Conquer" (the open-source game of Electronic
+Arts) to AmigaOS 3.x with its own native back end.
+
+HARDWARE
+  Made for Amiga 500 / 1200 / 3000 / 4000 with a Warp card (Warp 560, 1240,
+  1260, 1260 Extreme, 7060), ported and tested on such cards: it reaches
+  its speed through the fast graphics (RTG) of the Warp. Other Amigas with a
+  68040/68060 and Picasso96 RTG run it, but slower.
+  Tested on: A1200 + Warp 1260 Extreme, A4000 + Warp 7060 (68060),
+  AmigaOS 3.2.
+
+REQUIREMENTS
+  AmigaOS 3.2, Picasso96, 68060.library (or 040), the game data (see
+  data/ReadMe.txt). Sound: the Amiga's own audio chip (Paula); AHI is an
+  option. Bug reports from the game need a TCP/IP stack (Roadshow, Miami,
+  Genesis).
+
+INSTALLATION
+  UnZip TiberianDawn-0.2.zip -d Work:Games
+  Put the game files into TiberianDawn/data (the freeware data from Electronic Arts,
+  NOT included):
+    The *.MIX files of Command & Conquer (Gold), the freeware Tiberian Dawn data released by
+    Electronic Arts, for example:
+      CONQUER.MIX GENERAL.MIX SOUNDS.MIX SPEECH.MIX SCORES.MIX UPDATE.MIX UPDATEC.MIX
+      TEMPERAT.MIX WINTER.MIX DESERT.MIX TRANSIT.MIX LOCAL.MIX CCLOCAL.MIX DESEICNH.MIX
+      TEMPICNH.MIX WINTICNH.MIX
+    With MOVIES.MIX the game plays its movies (without it the game runs without movies).
+  Start TiberianDawn from its icon or from a Shell.
+
+THE GAME
+  GDI and Nod campaigns, 640x400 screen with 256 colours, played with the mouse as on the PC.
+  The sidebar is opened by the "Sidebar" tab at the top right.
+  Movies are played with sound (when the data contain the movies).
+  Saved games and settings: the drawer "user" in the game's drawer.
+  Ctrl-C closes the game.
+
+SETTINGS (Tool Types of the icon, remove the brackets to switch on)
+  SOUND=PAULA          sound through the Amiga's own audio chip (default)
+  SOUND=AHI            sound through AHI (on a Warp card through HDMI)
+  SOUND=OFF            no sound
+  MOVIES=OFF           movies are skipped
+  REPORTSERVER=host:port   server of the bug reports (default: the game server)
+  The sound of the movies takes the same way as the sound of the game.
+
+BUG REPORTS (F10)
+  The F10 key during the game writes the state of the game (in the drawer
+  "user": bugNNN.txt, bugNNN-screen.bmp, bugNNN.sav) and - when a TCP/IP stack
+  is running - opens the report window: an e-mail address (optional,
+  remembered) and a few words about the problem (Return goes to the next
+  field and sends in the last one; Esc closes). SEND sends the report to the
+  game server: e-mail and words, release number, description of the Amiga
+  (CPU, Kickstart, memory, Warp card), the picture of the screen and the
+  saved game. The number of the report appears after sending. Without a
+  TCP/IP stack F10 only writes the files - they can be sent to the author by
+  hand.
+  Note: F10 is no longer the key of bookmark 2 (bookmarks: F9, F11, F12).
+
+LICENCE
+  GNU GPL v3 (doc/COPYING). The game data belongs to Electronic Arts.

@@ -1,0 +1,14 @@
+INSTALLATION / INSTALACJA - COMMAND & CONQUER: TIBERIAN DAWN 0.2
+================================================================
+
+EN
+ 1. UnZip TiberianDawn-0.2.zip -d Work:Games
+ 2. Copy the game files into Work:Games/TiberianDawn/data (freeware data from
+    Electronic Arts, not included - see data/ReadMe.txt).
+ 3. Double-click TiberianDawn.
+
+PL
+ 1. UnZip TiberianDawn-0.2.zip -d Work:Games
+ 2. Skopiuj pliki gry do Work:Games/TiberianDawn/data (darmowe dane Electronic Arts,
+    niedolaczone - patrz data/ReadMe.txt).
+ 3. Kliknij dwukrotnie TiberianDawn.

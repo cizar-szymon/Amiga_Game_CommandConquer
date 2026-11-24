@@ -1,0 +1,33 @@
+# F10 bug report test (RA): menu -> mission -> F10 -> fill in the fields -> send
+wait 60
+click 320 182
+wait 100
+click 500 252
+wait 100
+click 266 227
+wait 1800
+key f10
+pwait 60
+dump
+key t
+key e
+key s
+key t
+key return
+key b
+key u
+key g
+key return
+key o
+key k
+key return
+pwait 5
+dump
+key return
+pwait 400
+dump
+key return
+pwait 100
+dump
+pwait 30
+quit

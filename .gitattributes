@@ -1,1 +1,3 @@
+# the files of a release are byte for byte what is in the ZIP (WARP HUB checks them)
 releases/** -text
+releases-ra/** -text

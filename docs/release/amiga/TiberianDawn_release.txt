@@ -1,0 +1,14 @@
+COMMAND & CONQUER: TIBERIAN DAWN na Amige - historia wydan
+====================================================================
+
+Jak zglosic blad: klawisz F10 w grze (okno zgloszenia, wymaga stosu TCP/IP) albo
+numer wydania (Shell: Version TiberianDawn), opis Amigi i karty oraz co sie robilo.
+
+0.2  (24.11.2026)
+  - Tiberian Dawn: kampanie GDI i Nod, ekran 640x400, 256 kolorow, sterowanie mysza.
+  - Filmy z dzwiekiem (z danymi zawierajacymi filmy); Tool Type MOVIES=OFF je pomija.
+  - Dzwiek i muzyka przez wlasny uklad audio Amigi (Paula, domyslnie) albo AHI;
+    Tool Types SOUND=PAULA / AHI / OFF. Dzwiek filmow idzie ta sama droga.
+  - Zgloszenia bledow klawiszem F10: okno w stylu menu gry, wysylka na serwer gier
+    (e-mail, opis, stan gry, obraz ekranu); bez stosu TCP/IP tylko zapis plikow.
+  - Start z ikony albo z Shella; Ctrl-C zamyka gre.
