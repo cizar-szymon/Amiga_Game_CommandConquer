@@ -46,5 +46,10 @@ Release `-O2` is required: gcc 6.5 at `-O3` decodes some graphics wrongly (see `
 `tools/make_release.sh td|ra` builds the ZIP from `build/amiga/vanillatd` or `vanillara`;
 `tools/push_release_branch.sh` puts the Red Alert release on its branch.
 
+## Branches
+
+- `main`: the sources (patches, tools, notes) and the Tiberian Dawn release.
+- `release-ra`: only the Red Alert release (`releases/amiga`), for WARP HUB, which takes one game from one place of a repository. Its history is separate from `main`; it is never merged.
+
 ## Licence
 GNU GPL v3 (`docs/release/amiga/COPYING`). The game data belongs to Electronic Arts and is not included.
